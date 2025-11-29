@@ -34,7 +34,7 @@ import {
   type InsertAnalyticsIdentity,
   type IssueWithDetails,
   type CommentWithAuthor,
-} from "@shared/schema";
+} from "../shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql, count as countFn } from "drizzle-orm";
 

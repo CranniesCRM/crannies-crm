@@ -5,7 +5,7 @@ import { setupAuth, isAuthenticated } from "./stytchAuth";
 import { sendChatInvitation, sendTeamInvitation } from "./resend";
 import { randomBytes } from "crypto";
 import { z } from "zod";
-import { calculateTrialEndDate } from "@shared/trial";
+import { calculateTrialEndDate } from "../shared/trial";
 import Stripe from "stripe";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
@@ -341,7 +341,7 @@ export async function registerRoutes(
 
       // Delete the comment via database
       const { db } = await import("./db");
-      const { comments } = await import("@shared/schema");
+      const { comments } = await import("../shared/schema");
       const { eq } = await import("drizzle-orm");
       
       const [comment] = await db.select().from(comments).where(eq(comments.id, commentId));

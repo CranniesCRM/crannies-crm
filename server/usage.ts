@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { issues, workspaceSubscriptions } from "@shared/schema";
+import { issues, workspaceSubscriptions } from "../shared/schema";
 import { eq, and, ne } from "drizzle-orm";
 import Stripe from "stripe";
 
