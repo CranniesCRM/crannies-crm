@@ -9,6 +9,9 @@ import { createServer } from "http";
 const app = express();
 const httpServer = createServer(app);
 
+// Export the app for Vercel
+export default app;
+
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;
@@ -85,27 +88,30 @@ app.use((req, res, next) => {
     await setupVite(httpServer, app);
   }
 
-  // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 5000 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
-  const port = parseInt(process.env.PORT || "3000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`serving on port ${port}`);
+  // Only start the server if not running on Vercel
+  if (process.env.VERCEL !== '1') {
+    // ALWAYS serve the app on the port specified in the environment variable PORT
+    // Other ports are firewalled. Default to 5000 if not specified.
+    // this serves both the API and the client.
+    // It is the only port that is not firewalled.
+    const port = parseInt(process.env.PORT || "3000", 10);
+    httpServer.listen(
+      {
+        port,
+        host: "0.0.0.0",
+        reusePort: true,
+      },
+      () => {
+        log(`serving on port ${port}`);
 
-      // Schedule bi-monthly usage reporting (1st and 15th of every month at 2 AM)
-      cron.schedule('0 2 1,15 * *', async () => {
-        log('Running scheduled bi-monthly usage reporting');
-        await reportUsageForAllSubscriptions();
-      });
+        // Schedule bi-monthly usage reporting (1st and 15th of every month at 2 AM)
+        cron.schedule('0 2 1,15 * *', async () => {
+          log('Running scheduled bi-monthly usage reporting');
+          await reportUsageForAllSubscriptions();
+        });
 
-      log('Bi-monthly usage reporting scheduled (1st and 15th of every month at 2 AM)');
-    },
-  );
+        log('Bi-monthly usage reporting scheduled (1st and 15th of every month at 2 AM)');
+      },
+    );
+  }
 })();
