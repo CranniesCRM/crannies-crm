@@ -51,9 +51,37 @@ export async function setupAuth(app: Express) {
         signup_expiration_minutes: 60,
       });
 
-      res.json({ success: true, user_id: response.user_id });
+      res.json({ success: true, user_id: response.user_id, message: "Magic link sent to your email" });
     } catch (error) {
       console.error("Login error:", error);
+      res.status(500).json({ message: "Failed to send magic link" });
+    }
+  });
+
+  // Resend magic link
+  app.post("/api/resend-magic-link", async (req, res) => {
+    try {
+      const { email } = req.body;
+      if (!email) {
+        return res.status(400).json({ message: "Email required" });
+      }
+
+      const protocol = req.protocol;
+      const host = req.get("host");
+      const redirectUrl = `${protocol}://${host}/api/authenticate`;
+
+      // Use loginOrCreate to send a fresh magic link
+      const response = await stytch.magicLinks.email.loginOrCreate({
+        email,
+        login_magic_link_url: redirectUrl,
+        signup_magic_link_url: redirectUrl,
+        login_expiration_minutes: 60,
+        signup_expiration_minutes: 60,
+      });
+
+      res.json({ success: true, user_id: response.user_id, message: "New magic link sent to your email" });
+    } catch (error) {
+      console.error("Resend magic link error:", error);
       res.status(500).json({ message: "Failed to send magic link" });
     }
   });
@@ -63,7 +91,15 @@ export async function setupAuth(app: Express) {
     try {
       const { token } = req.query;
       if (!token || typeof token !== "string") {
-        return res.status(400).send("Invalid token");
+        return res.status(400).send(`
+          <html>
+            <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+              <h1>Invalid Magic Link</h1>
+              <p>The magic link is invalid or has expired.</p>
+              <p><a href="/login" style="color: #007bff; text-decoration: none;">← Back to Login</a></p>
+            </body>
+          </html>
+        `);
       }
 
       const response = await stytch.magicLinks.authenticate({
@@ -84,9 +120,56 @@ export async function setupAuth(app: Express) {
 
       // Redirect to home
       res.redirect("/");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Authentication error:", error);
-      res.status(500).send("Authentication failed");
+      
+      // Handle specific Stytch errors
+      if (error.error_type === "invalid_authentication" || 
+          error.error_message?.includes("expired") ||
+          error.error_message?.includes("already been used")) {
+        return res.status(410).send(`
+          <html>
+            <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+              <h1>Magic Link Expired or Already Used</h1>
+              <p>This magic link has expired or has already been used.</p>
+              <p><a href="/login" style="color: #007bff; text-decoration: none; margin-right: 20px;">← Back to Login</a></p>
+              <button onclick="resendMagicLink()" style="background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">Send Another Magic Link</button>
+              <script>
+                async function resendMagicLink() {
+                  const email = prompt("Enter your email address:");
+                  if (email) {
+                    try {
+                      const response = await fetch('/api/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email })
+                      });
+                      if (response.ok) {
+                        alert('Magic link sent! Please check your email.');
+                        window.location.href = '/login';
+                      } else {
+                        alert('Failed to send magic link. Please try again.');
+                      }
+                    } catch (error) {
+                      alert('Failed to send magic link. Please try again.');
+                    }
+                  }
+                }
+              </script>
+            </body>
+          </html>
+        `);
+      }
+      
+      res.status(500).send(`
+        <html>
+          <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+            <h1>Authentication Failed</h1>
+            <p>There was an error authenticating your magic link.</p>
+            <p><a href="/login" style="color: #007bff; text-decoration: none;">← Back to Login</a></p>
+          </body>
+        </html>
+      `);
     }
   });
 

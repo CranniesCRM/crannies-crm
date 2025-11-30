@@ -107,43 +107,142 @@ export async function handler(event: any, context: any) {
       }, corsHeaders);
     }
 
+    // Resend magic link
+    if (path === '/api/resend-magic-link' && method === 'POST') {
+      let body: any = {};
+      if (event.body) {
+        body = event.body.startsWith('{') ? JSON.parse(event.body) : {};
+      }
+
+      const { email } = body;
+      if (!email) {
+        return createResponse(400, { message: "Email required" }, corsHeaders);
+      }
+
+      const protocol = headers['x-forwarded-proto'] || 'https';
+      const host = headers.host;
+      const redirectUrl = `${protocol}://${host}/api/authenticate`;
+
+      const response = await stytch.magicLinks.email.loginOrCreate({
+        email,
+        login_magic_link_url: redirectUrl,
+        signup_magic_link_url: redirectUrl,
+        login_expiration_minutes: 60,
+        signup_expiration_minutes: 60,
+      });
+
+      return createResponse(200, { 
+        success: true, 
+        user_id: response.user_id,
+        message: "New magic link sent to your email" 
+      }, corsHeaders);
+    }
+
     if (path === '/api/authenticate' && method === 'GET') {
       const token = event.queryStringParameters?.token;
       if (!token) {
         return {
           statusCode: 400,
           headers: { ...corsHeaders, 'Content-Type': 'text/html' },
-          body: '<h1>Invalid token</h1>',
+          body: `
+            <html>
+              <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+                <h1>Invalid Magic Link</h1>
+                <p>The magic link is invalid or has expired.</p>
+                <p><a href="/login" style="color: #007bff; text-decoration: none;">← Back to Login</a></p>
+              </body>
+            </html>
+          `,
         };
       }
 
-      const response = await stytch.magicLinks.authenticate({
-        token,
-        session_duration_minutes: 60 * 24 * 7, // 1 week
-      });
-
-      // Upsert user in our database
-      const email = response.user.emails[0]?.email;
-      if (email) {
-        await storage.upsertUser({
-          id: response.user.user_id,
-          email,
+      try {
+        const response = await stytch.magicLinks.authenticate({
+          token,
+          session_duration_minutes: 60 * 24 * 7, // 1 week
         });
+
+        // Upsert user in our database
+        const email = response.user.emails[0]?.email;
+        if (email) {
+          await storage.upsertUser({
+            id: response.user.user_id,
+            email,
+          });
+        }
+
+        // Set session cookie
+        const setCookieHeader = `stytch_session=${response.session_token}; HttpOnly; Secure; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`;
+
+        // Redirect to home
+        return {
+          statusCode: 302,
+          headers: {
+            ...corsHeaders,
+            'Set-Cookie': setCookieHeader,
+            'Location': '/',
+          },
+          body: '',
+        };
+      } catch (error: any) {
+        console.error('Authentication error:', error);
+        
+        // Handle specific Stytch errors
+        if (error.error_type === "invalid_authentication" || 
+            error.error_message?.includes("expired") ||
+            error.error_message?.includes("already been used")) {
+          return {
+            statusCode: 410,
+            headers: { ...corsHeaders, 'Content-Type': 'text/html' },
+            body: `
+              <html>
+                <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+                  <h1>Magic Link Expired or Already Used</h1>
+                  <p>This magic link has expired or has already been used.</p>
+                  <p><a href="/login" style="color: #007bff; text-decoration: none; margin-right: 20px;">← Back to Login</a></p>
+                  <button onclick="resendMagicLink()" style="background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">Send Another Magic Link</button>
+                  <script>
+                    async function resendMagicLink() {
+                      const email = prompt("Enter your email address:");
+                      if (email) {
+                        try {
+                          const response = await fetch('/api/login', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ email })
+                          });
+                          if (response.ok) {
+                            alert('Magic link sent! Please check your email.');
+                            window.location.href = '/login';
+                          } else {
+                            alert('Failed to send magic link. Please try again.');
+                          }
+                        } catch (error) {
+                          alert('Failed to send magic link. Please try again.');
+                        }
+                      }
+                    }
+                  </script>
+                </body>
+              </html>
+            `,
+          };
+        }
+
+        return {
+          statusCode: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'text/html' },
+          body: `
+            <html>
+              <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+                <h1>Authentication Failed</h1>
+                <p>There was an error authenticating your magic link.</p>
+                <p><a href="/login" style="color: #007bff; text-decoration: none;">← Back to Login</a></p>
+              </body>
+            </html>
+          `,
+        };
       }
-
-      // Set session cookie
-      const setCookieHeader = `stytch_session=${response.session_token}; HttpOnly; Secure; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`;
-
-      // Redirect to home
-      return {
-        statusCode: 302,
-        headers: {
-          ...corsHeaders,
-          'Set-Cookie': setCookieHeader,
-          'Location': '/',
-        },
-        body: '',
-      };
     }
 
     if (path === '/api/logout') {
