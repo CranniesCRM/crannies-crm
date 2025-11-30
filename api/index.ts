@@ -193,7 +193,10 @@ export async function handler(event: any, context: any) {
         }
 
         // Set session cookie
-        const setCookieHeader = `stytch_session=${response.session_token}; HttpOnly; Secure; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`;
+        const setCookieHeader = `stytch_session=${response.session_token}; HttpOnly; Secure; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60 * 1000}`;
+        
+        console.log('Netlify Auth - Setting cookie:', setCookieHeader);
+        console.log('Netlify Auth - Redirecting to: /');
 
         // Redirect to home
         return {
