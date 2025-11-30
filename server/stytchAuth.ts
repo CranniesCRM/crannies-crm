@@ -100,27 +100,50 @@ export async function setupAuth(app: Express) {
 
   // Authenticate magic link
   app.get("/api/authenticate", async (req, res) => {
-    try {
-      const { token } = req.query;
-      if (!token || typeof token !== "string") {
-        return res.status(400).send(`
-          <html>
-            <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-              <h1>Invalid Magic Link</h1>
-              <p>The magic link is invalid or has expired.</p>
-              <p><a href="/login" style="color: #007bff; text-decoration: none;">← Back to Login</a></p>
-            </body>
-          </html>
-        `);
-      }
+    // Try different token parameters that Stytch might use
+    let token = req.query.token as string;
+    
+    // If no token parameter, check for stytch_token or public_token
+    if (!token) {
+      token = req.query.stytch_token as string || req.query.public_token as string;
+    }
+    
+    // Debug logging
+    console.log("Authenticate request query:", req.query);
+    console.log("Extracted token:", token);
+    
+    if (!token || typeof token !== "string") {
+      console.error("No valid token found in request:", req.query);
+      return res.status(400).send(`
+        <html>
+          <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+            <h1>Invalid Magic Link</h1>
+            <p>The magic link is missing or invalid.</p>
+            <p>Request details: ${JSON.stringify(req.query)}</p>
+            <p><a href="/login" style="color: #007bff; text-decoration: none;">← Back to Login</a></p>
+          </body>
+        </html>
+      `);
+    }
 
+    try {
+      console.log("Attempting to authenticate token:", token);
+      
       const response = await stytch.magicLinks.authenticate({
         token,
         session_duration_minutes: 60 * 24 * 7, // 1 week
       });
 
+      console.log("Authentication successful:", {
+        user_id: response.user.user_id,
+        email: response.user.emails[0]?.email,
+        session_token: response.session_token ? "present" : "missing"
+      });
+
       // Upsert user in our database
       await upsertUser(response.user.user_id, response.user.emails[0].email);
+      
+      console.log("User upserted successfully");
 
       // Set session cookie
       res.cookie("stytch_session", response.session_token, {
@@ -133,12 +156,21 @@ export async function setupAuth(app: Express) {
       // Redirect to home
       res.redirect("/");
     } catch (error: any) {
-      console.error("Authentication error:", error);
+      console.error("Authentication error details:", {
+        message: error.message,
+        error_type: error.error_type,
+        error_message: error.error_message,
+        error_url: error.error_url,
+        request_id: error.request_id,
+        token: token,
+        query: req.query
+      });
       
       // Handle specific Stytch errors
       if (error.error_type === "invalid_authentication" || 
           error.error_message?.includes("expired") ||
-          error.error_message?.includes("already been used")) {
+          error.error_message?.includes("already been used") ||
+          error.error_type === "unable_to_auth_magic_link") {
         return res.status(410).send(`
           <html>
             <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
@@ -178,6 +210,7 @@ export async function setupAuth(app: Express) {
           <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
             <h1>Authentication Failed</h1>
             <p>There was an error authenticating your magic link.</p>
+            <p>Error: ${error.error_message || error.message || 'Unknown error'}</p>
             <p><a href="/login" style="color: #007bff; text-decoration: none;">← Back to Login</a></p>
           </body>
         </html>
