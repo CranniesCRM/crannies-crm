@@ -1,24 +1,10 @@
 [build]
   publish = "dist/public"
   command = "bun run build"
+  publish = "."
 
 [functions]
   directory = "api"
-
-[[redirects]]
-  from = "/api/login"
-  to = "/.netlify/functions/index"
-  status = 200
-
-[[redirects]]
-  from = "/api/authenticate"
-  to = "/.netlify/functions/index"
-  status = 200
-
-[[redirects]]
-  from = "/api/logout"
-  to = "/.netlify/functions/index"
-  status = 200
 
 [[redirects]]
   from = "/*"
@@ -26,4 +12,4 @@
   status = 200
 
 [build.environment]
-  NODE_VERSION = "18"
+  NODE_VERSION = "20"
