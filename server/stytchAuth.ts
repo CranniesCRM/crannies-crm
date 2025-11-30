@@ -39,12 +39,18 @@ export async function setupAuth(app: Express) {
         return res.status(400).json({ message: "Email required" });
       }
 
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ message: "Invalid email format" });
+      }
+
       const protocol = req.protocol;
       const host = req.get("host");
       const redirectUrl = `${protocol}://${host}/api/authenticate`;
 
       const response = await stytch.magicLinks.email.loginOrCreate({
-        email,
+        email: email.toLowerCase().trim(), // Normalize email
         login_magic_link_url: redirectUrl,
         signup_magic_link_url: redirectUrl,
         login_expiration_minutes: 60,
@@ -52,9 +58,15 @@ export async function setupAuth(app: Express) {
       });
 
       res.json({ success: true, user_id: response.user_id, message: "Magic link sent to your email" });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Login error:", error);
-      res.status(500).json({ message: "Failed to send magic link" });
+      
+      // Handle specific Stytch errors
+      if (error.error_type === "email_not_found") {
+        return res.status(404).json({ message: "User not found. Please check your email or sign up first." });
+      }
+      
+      res.status(500).json({ message: "Failed to send magic link. Please try again later." });
     }
   });
 
