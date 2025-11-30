@@ -89,8 +89,12 @@ export async function handler(event: any, context: any) {
       }
 
       const protocol = headers['x-forwarded-proto'] || 'https';
-      const host = headers.host;
+      const host = headers.host || headers.Host || headers['x-forwarded-host'];
       const redirectUrl = `${protocol}://${host}/api/authenticate`;
+
+      console.log('Netlify Login - Constructed redirect URL:', redirectUrl);
+      console.log('Netlify Login - Host header:', host);
+      console.log('Netlify Login - Protocol:', protocol);
 
       const response = await stytch.magicLinks.email.loginOrCreate({
         email,
@@ -120,7 +124,7 @@ export async function handler(event: any, context: any) {
       }
 
       const protocol = headers['x-forwarded-proto'] || 'https';
-      const host = headers.host;
+      const host = headers.host || headers.Host || headers['x-forwarded-host'];
       const redirectUrl = `${protocol}://${host}/api/authenticate`;
 
       const response = await stytch.magicLinks.email.loginOrCreate({
