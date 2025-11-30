@@ -193,20 +193,36 @@ export async function handler(event: any, context: any) {
         }
 
         // Set session cookie
-        const setCookieHeader = `stytch_session=${response.session_token}; HttpOnly; Secure; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60 * 1000}`;
+        const setCookieHeader = `stytch_session=${response.session_token}; HttpOnly; Secure; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`;
         
         console.log('Netlify Auth - Setting cookie:', setCookieHeader);
         console.log('Netlify Auth - Redirecting to: /');
 
-        // Redirect to home
+        // For SPAs, return HTML that handles the redirect client-side
         return {
-          statusCode: 302,
+          statusCode: 200,
           headers: {
             ...corsHeaders,
+            'Content-Type': 'text/html',
             'Set-Cookie': setCookieHeader,
-            'Location': '/',
           },
-          body: '',
+          body: `
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <title>Authentication Successful</title>
+              <script>
+                // Redirect to dashboard after a short delay
+                setTimeout(function() {
+                  window.location.href = '/';
+                }, 100);
+              </script>
+            </head>
+            <body>
+              <p>Authentication successful! Redirecting...</p>
+            </body>
+            </html>
+          `,
         };
       } catch (error: any) {
         console.error('Authentication error:', error);
