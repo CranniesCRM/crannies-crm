@@ -1,1 +1,0 @@
-{"version": 2, "buildCommand": "bun run build", "installCommand": "bun install", "outputDirectory": "dist/public", "functions": {"api/index.ts": {"runtime": "@vercel/node@3.0.0"}}, "routes": [{"src": "/api/(.*)", "dest": "/api/index.ts"}, {"src": "/(.*)", "dest": "/client/dist/index.html"}]}
