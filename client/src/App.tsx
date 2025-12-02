@@ -21,6 +21,10 @@ import Team from "@/pages/team";
 import Settings from "@/pages/settings";
 import PublicChat from "@/pages/public-chat";
 import TrialExpired from "@/pages/trial-expired";
+import AccountsPayable from "@/pages/ap";
+import AccountsReceivable from "@/pages/ar";
+import Procurement from "@/pages/procurement";
+import { InvoiceView } from "@/pages/invoice-view";
 import { Skeleton } from "@/components/ui/skeleton";
 import { isTrialExpired } from "@shared/trial";
 import type { Workspace } from "@shared/schema";
@@ -133,6 +137,22 @@ function Router() {
       <Route path="/issues/:id">
         <AuthenticatedLayout>
           <IssueDetail />
+        </AuthenticatedLayout>
+      </Route>
+      <Route path="/ap">
+        <AuthenticatedLayout>
+          <AccountsPayable />
+        </AuthenticatedLayout>
+      </Route>
+      <Route path="/ar">
+        <AuthenticatedLayout>
+          <AccountsReceivable />
+        </AuthenticatedLayout>
+      </Route>
+      <Route path="/ar/invoices/:id" component={InvoiceView} />
+      <Route path="/procurement">
+        <AuthenticatedLayout>
+          <Procurement />
         </AuthenticatedLayout>
       </Route>
       <Route path="/team">

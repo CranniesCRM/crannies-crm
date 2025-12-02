@@ -10,19 +10,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Send, Lock, MessageSquare, Users, Star } from "lucide-react";
-import cranniesLogo from "@assets/ChatGPT Image Nov 29, 2025, 05_12_28 AM_1764411187059.png";
+import cranniesLogo from "@assets/logo.png";
 import type { Issue, CommentWithAuthor, User } from "@shared/schema";
 
-// Analytics.js type declarations
-declare global {
-  interface Window {
-    analytics: {
-      track: (event: string, properties?: any) => void;
-      identify: (userId?: string, traits?: any) => void;
-      page: (name?: string, properties?: any) => void;
-    };
-  }
-}
+
 
 interface PublicChatData {
   issue: Issue;
@@ -43,14 +34,7 @@ function PasscodeForm({
   const [name, setName] = useState("");
   const { toast } = useToast();
 
-  useEffect(() => {
-    // Track page view
-    if (window.analytics) {
-      window.analytics.page('Public Chat Access', {
-        chat_slug: slug,
-      });
-    }
-  }, [slug]);
+
 
   const verifyMutation = useMutation({
     mutationFn: async () => {
@@ -60,19 +44,6 @@ function PasscodeForm({
       });
     },
     onSuccess: (data: { success: boolean; contactEmail?: string; issueId?: string }) => {
-      // Identify user and track successful chat access
-      if (window.analytics && data.contactEmail) {
-        window.analytics.identify(data.contactEmail, {
-          name: name,
-          email: data.contactEmail,
-          chat_slug: slug,
-        });
-        window.analytics.track('chat_joined', {
-          chat_slug: slug,
-          client_name: name,
-          client_email: data.contactEmail,
-        });
-      }
       onSuccess(name, data.contactEmail, data.issueId);
     },
     onError: (error: Error) => {
@@ -261,14 +232,6 @@ function ChatRoom({
       });
     },
     onSuccess: () => {
-      // Track message sent
-      if (window.analytics) {
-        window.analytics.track('message_sent', {
-          chat_slug: slug,
-          client_name: clientName,
-          issue_id: data?.issue?.id,
-        });
-      }
       setMessage("");
       refetch();
     },
@@ -285,17 +248,7 @@ function ChatRoom({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [data?.comments]);
 
-  useEffect(() => {
-    // Identify user with contact email when chat loads (fallback if not done during verification)
-    if (contactEmail && window.analytics) {
-      window.analytics.identify(contactEmail, {
-        name: clientName,
-        email: contactEmail,
-        chat_slug: slug,
-        issue_id: issueId,
-      });
-    }
-  }, [contactEmail, clientName, slug, issueId]);
+
 
   if (isLoading) {
     return (

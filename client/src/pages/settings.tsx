@@ -2,6 +2,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -23,10 +24,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Upload, User, Building2, Save, Code, Copy } from "lucide-react";
+import { Upload, User, Building2, Save, Code, Copy, CreditCard, Link, Unlink, RefreshCw, CheckCircle } from "lucide-react";
 import type { Workspace } from "@shared/schema";
 
 const profileSchema = z.object({
@@ -90,11 +92,30 @@ const industries = [
 export default function Settings() {
   const { user } = useAuth();
   const { toast } = useToast();
+  const [stripeConnectLoading, setStripeConnectLoading] = useState(false);
 
   const { data: workspace, isLoading: workspaceLoading } = useQuery<Workspace>({
     queryKey: ["/api/workspace"],
     enabled: user?.isAdmin || false,
   });
+
+  // Check if workspace has Stripe Connect enabled
+  const isStripeConnectEnabled = !!(workspace?.stripeConnectAccountId && workspace?.stripeConnectEnabled);
+  const isStripeConnectOnboardingStarted = workspace?.stripeConnectOnboardingStarted;
+  const isStripeConnectOnboardingComplete = workspace?.stripeConnectOnboardingComplete;
+  const stripeConnectOnboardingStatus = workspace?.stripeConnectOnboardingStatus;
+  const stripeConnectAccountId = workspace?.stripeConnectAccountId;
+  const stripeConnectChargesEnabled = workspace?.stripeConnectChargesEnabled;
+  const stripeConnectPayoutsEnabled = workspace?.stripeConnectPayoutsEnabled;
+  const stripeConnectBusinessProfile = workspace?.stripeConnectBusinessProfile;
+  const stripeConnectLastWebhookEvent = workspace?.stripeConnectLastWebhookEvent;
+  const stripeConnectLastWebhookTimestamp = workspace?.stripeConnectLastWebhookTimestamp;
+  const stripeConnectOnboardingEvents = workspace?.stripeConnectOnboardingEvents;
+  const stripeConnectRequirementsCurrentlyDue = workspace?.stripeConnectRequirementsCurrentlyDue;
+  const stripeConnectRequirementsEventuallyDue = workspace?.stripeConnectRequirementsEventuallyDue;
+  const stripeConnectRequirementsPastDue = workspace?.stripeConnectRequirementsPastDue;
+  const stripeConnectAccountLink = workspace?.stripeConnectAccountLink;
+  const stripeConnectAccountLinkExpires = workspace?.stripeConnectAccountLinkExpires;
 
   const profileForm = useForm<ProfileData>({
     resolver: zodResolver(profileSchema),
@@ -197,6 +218,115 @@ export default function Settings() {
       });
     },
   });
+
+  // Stripe Connect integration mutations
+  const createStripeConnectAccountMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/stripe/connect/create-account", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+      
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || "Failed to create Stripe Connect account");
+      }
+      
+      return await response.json();
+    },
+    onSuccess: (data) => {
+      // Invalidate the workspace query to refresh the data with onboarding started
+      queryClient.invalidateQueries({ queryKey: ["/api/workspace"] });
+      
+      // Redirect to Stripe Connect onboarding
+      window.location.href = data.onboardingUrl;
+    },
+    onError: (error: Error) => {
+      console.error("Stripe Connect account creation error:", error);
+      toast({
+        title: "Stripe Connect Setup",
+        description: "Failed to create Stripe Connect account. Please try again.",
+        variant: "destructive",
+      });
+      setStripeConnectLoading(false);
+    },
+  });
+
+  const refreshStripeConnectStatusMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/stripe/connect/refresh-status", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+      
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || "Failed to refresh Stripe Connect status");
+      }
+      
+      return await response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Status Updated",
+        description: "Stripe Connect status refreshed successfully.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/workspace"] });
+    },
+    onError: (error: Error) => {
+      console.error("Stripe Connect status refresh error:", error);
+      toast({
+        title: "Status Update Failed",
+        description: "Failed to refresh Stripe Connect status.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Generate account link for verification
+  const generateAccountLinkMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/stripe/connect/generate-account-link", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+      
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || "Failed to generate account link");
+      }
+      
+      return await response.json();
+    },
+    onSuccess: (data) => {
+      // Open the account link in a new window
+      window.open(data.accountLink, '_blank');
+      toast({
+        title: "Account Link Generated",
+        description: "Opening verification form in a new tab.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/workspace"] });
+    },
+    onError: (error: Error) => {
+      console.error("Account link generation error:", error);
+      toast({
+        title: "Account Link Failed",
+        description: error.message || "Failed to generate account link.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Check if verification is required
+  const hasVerificationRequirements = (stripeConnectRequirementsCurrentlyDue as any[])?.length > 0 || 
+                                      (stripeConnectRequirementsPastDue as any[])?.length > 0;
+  const requiresVerification = stripeConnectOnboardingStatus === 'requires_verification' || hasVerificationRequirements;
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -692,6 +822,445 @@ const response = await fetch('/api/issues/bulk', {
                   </form>
                 </Form>
               )}
+            </CardContent>
+          </Card>
+        )}
+
+        {user?.isAdmin && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-full bg-green-100 flex items-center justify-center">
+                  <CreditCard className="h-5 w-5 text-green-600" />
+                </div>
+                <div>
+                  <CardTitle>Payment Processing</CardTitle>
+                  <CardDescription>
+                    Accept payments from customers using Stripe Connect
+                  </CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-6">
+                {!isStripeConnectEnabled && !isStripeConnectOnboardingStarted ? (
+                  <div className="text-center py-6">
+                    <div className="h-16 w-16 rounded-full bg-muted flex items-center justify-center mx-auto mb-4">
+                      <CreditCard className="h-8 w-8 text-muted-foreground" />
+                    </div>
+                    <h3 className="text-lg font-semibold mb-2">Connect Your Stripe Account</h3>
+                    <p className="text-sm text-muted-foreground mb-6 max-w-md mx-auto">
+                      Connect your Stripe account to accept payments directly from your customers.
+                      You'll be able to process credit cards, ACH transfers, and more.
+                    </p>
+                    <Button
+                      onClick={() => createStripeConnectAccountMutation.mutate()}
+                      disabled={createStripeConnectAccountMutation.isPending || stripeConnectLoading}
+                      className="bg-blue-600 hover:bg-blue-700"
+                    >
+                      {stripeConnectLoading ? (
+                        <>
+                          <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                          Setting up Stripe Connect...
+                        </>
+                      ) : (
+                        <>
+                          <CreditCard className="mr-2 h-4 w-4" />
+                          Connect Stripe Account
+                        </>
+                      )}
+                    </Button>
+                    <div className="flex items-center justify-center gap-4 mt-4 text-xs text-muted-foreground">
+                      <div className="flex items-center gap-1">
+                        <CheckCircle className="h-3 w-3 text-green-500" />
+                        PCI DSS compliant
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <CheckCircle className="h-3 w-3 text-green-500" />
+                        Bank-level security
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <CheckCircle className="h-3 w-3 text-green-500" />
+                        Instant setup
+                      </div>
+                    </div>
+                  </div>
+                ) : isStripeConnectOnboardingStarted && !isStripeConnectOnboardingComplete ? (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between p-4 border rounded-lg bg-blue-50">
+                      <div className="flex items-center gap-3">
+                        <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
+                          <RefreshCw className="h-5 w-5 text-blue-600" />
+                        </div>
+                        <div>
+                          <h3 className="font-medium text-blue-800">
+                            Stripe Connect Onboarding
+                          </h3>
+                          <p className="text-sm text-blue-600">
+                            {stripeConnectOnboardingStatus === 'in_progress' ? 'Completing account setup...' :
+                             stripeConnectOnboardingStatus === 'requires_verification' ? 'Verification required to continue setup...' :
+                             stripeConnectOnboardingStatus === 'authorized' ? 'Account authorized, finalizing setup...' : 'Onboarding in progress'}
+                          </p>
+                          {stripeConnectLastWebhookEvent && (
+                            <p className="text-xs text-blue-500 mt-1">
+                              Last event: {stripeConnectLastWebhookEvent} • {stripeConnectLastWebhookTimestamp ? new Date(stripeConnectLastWebhookTimestamp).toLocaleString() : 'Just now'}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <Badge variant="default" className="bg-blue-600">
+                        Onboarding
+                      </Badge>
+                    </div>
+
+                    {/* Verification Requirements Section */}
+                    {requiresVerification && (
+                      <div className="p-6 border-2 border-amber-300 rounded-xl bg-white shadow-lg">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-3">
+                            <div className="h-10 w-10 rounded-full bg-amber-100 flex items-center justify-center border-2 border-amber-200">
+                              <CheckCircle className="h-5 w-5 text-amber-600" />
+                            </div>
+                            <div>
+                              <h4 className="font-bold text-amber-900 text-lg">Verification Required</h4>
+                              <p className="text-sm text-amber-700">Additional verification needed to enable payouts</p>
+                            </div>
+                          </div>
+                          <Button
+                            size="lg"
+                            onClick={() => generateAccountLinkMutation.mutate()}
+                            disabled={generateAccountLinkMutation.isPending}
+                            className="bg-amber-600 hover:bg-amber-700 text-white font-semibold px-6 py-3 shadow-md"
+                          >
+                            {generateAccountLinkMutation.isPending ? (
+                              <>
+                                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                                Generating...
+                              </>
+                            ) : (
+                              <>
+                                <Link className="mr-2 h-4 w-4" />
+                                Complete Verification Now
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                        
+                        {stripeConnectRequirementsCurrentlyDue && (stripeConnectRequirementsCurrentlyDue as any[]).length > 0 ? (
+                          <div className="mb-4">
+                            <div className="flex items-center gap-2 mb-3">
+                              <div className="h-3 w-3 rounded-full bg-amber-500"></div>
+                              <p className="text-sm font-bold text-amber-900">Currently Due:</p>
+                            </div>
+                            <div className="space-y-2">
+                              {(stripeConnectRequirementsCurrentlyDue as any[]).map((requirement: string, index: number) => (
+                                <div key={index} className="text-sm text-amber-800 bg-amber-50 border border-amber-200 px-3 py-2 rounded-lg font-medium">
+                                  {requirement}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {stripeConnectRequirementsPastDue && (stripeConnectRequirementsPastDue as any[]).length > 0 ? (
+                          <div className="mb-4">
+                            <div className="flex items-center gap-2 mb-3">
+                              <div className="h-3 w-3 rounded-full bg-red-500"></div>
+                              <p className="text-sm font-bold text-red-900">Past Due (Urgent):</p>
+                            </div>
+                            <div className="space-y-2">
+                              {(stripeConnectRequirementsPastDue as any[]).map((requirement: string, index: number) => (
+                                <div key={index} className="text-sm text-red-800 bg-red-50 border border-red-200 px-3 py-2 rounded-lg font-medium">
+                                  {requirement}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        <div className="bg-gradient-to-r from-amber-50 to-yellow-50 p-4 rounded-lg border border-amber-200">
+                          <p className="text-sm text-amber-800 font-medium mb-2">
+                            ⚡ Complete verification to unlock:
+                          </p>
+                          <ul className="text-xs text-amber-700 space-y-1 ml-4">
+                            <li>• Full payment processing capabilities</li>
+                            <li>• Direct deposits to your bank account</li>
+                            <li>• Complete Stripe Connect integration</li>
+                          </ul>
+                        </div>
+
+                        {stripeConnectAccountLink && (
+                          <div className="mt-4 p-3 bg-amber-50 rounded-lg border border-amber-200">
+                            <p className="text-sm font-medium text-amber-800 mb-1">Active Verification Link:</p>
+                            <a
+                              href={stripeConnectAccountLink}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm text-blue-600 underline hover:text-blue-800 break-all"
+                            >
+                              Click here to complete verification requirements
+                            </a>
+                            {stripeConnectAccountLinkExpires && (
+                              <p className="text-xs text-amber-700 mt-1">
+                                <strong>Expires:</strong> {new Date(stripeConnectAccountLinkExpires).toLocaleString()}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="p-4 border rounded-lg">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium">Onboarding Progress</span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => refreshStripeConnectStatusMutation.mutate()}
+                          disabled={refreshStripeConnectStatusMutation.isPending}
+                        >
+                          {refreshStripeConnectStatusMutation.isPending ? (
+                            <RefreshCw className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <RefreshCw className="h-3 w-3" />
+                          )}
+                        </Button>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <div className={`h-2 w-2 rounded-full ${stripeConnectAccountId ? 'bg-green-500' : 'bg-gray-300'}`} />
+                          <span className="text-sm">Account Created</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className={`h-2 w-2 rounded-full ${stripeConnectChargesEnabled ? 'bg-green-500' : 'bg-gray-300'}`} />
+                          <span className="text-sm">Charges Enabled</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className={`h-2 w-2 rounded-full ${stripeConnectPayoutsEnabled ? 'bg-green-500' : 'bg-gray-300'}`} />
+                          <span className="text-sm">Payouts Enabled</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className={`h-2 w-2 rounded-full ${isStripeConnectOnboardingComplete ? 'bg-green-500' : 'bg-gray-300'}`} />
+                          <span className="text-sm">Onboarding Complete</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {stripeConnectOnboardingEvents && Array.isArray(stripeConnectOnboardingEvents) && stripeConnectOnboardingEvents.length > 0 ? (
+                      <div className="p-4 border rounded-lg">
+                        <div className="text-sm font-medium mb-2">Recent Onboarding Events</div>
+                        <div className="space-y-2 text-sm">
+                          {(stripeConnectOnboardingEvents as Array<any>).slice(-3).reverse().map((event: any, index: number) => (
+                            <div key={index} className="flex items-center gap-2 p-2 bg-gray-50 rounded">
+                              <div className="text-xs text-muted-foreground w-32 truncate">
+                                {new Date(event.timestamp).toLocaleTimeString()}
+                              </div>
+                              <div className="text-xs font-medium text-blue-600">
+                                {event.event}
+                              </div>
+                              <div className="text-xs text-muted-foreground flex-1 truncate">
+                                {JSON.stringify(event.data)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="flex gap-3 pt-4 border-t">
+                      <Button
+                        variant="outline"
+                        onClick={() => refreshStripeConnectStatusMutation.mutate()}
+                        disabled={refreshStripeConnectStatusMutation.isPending}
+                      >
+                        {refreshStripeConnectStatusMutation.isPending ? (
+                          <>
+                            <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                            Refreshing...
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                            Refresh Status
+                          </>
+                        )}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => generateAccountLinkMutation.mutate()}
+                        disabled={generateAccountLinkMutation.isPending}
+                      >
+                        {generateAccountLinkMutation.isPending ? (
+                          <>
+                            <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                            Generating...
+                          </>
+                        ) : (
+                          <>
+                            <Link className="mr-2 h-4 w-4" />
+                            Complete Setup
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between p-4 border rounded-lg bg-green-50">
+                      <div className="flex items-center gap-3">
+                        <div className="h-10 w-10 rounded-full bg-green-100 flex items-center justify-center">
+                          <CheckCircle className="h-5 w-5 text-green-600" />
+                        </div>
+                        <div>
+                          <h3 className="font-medium text-green-800">
+                            Stripe Connect Account
+                          </h3>
+                          <p className="text-sm text-green-600">
+                            {stripeConnectChargesEnabled && stripeConnectPayoutsEnabled
+                              ? 'Account fully configured and ready for payments'
+                              : 'Account connected, completing setup...'
+                            }
+                          </p>
+                          {stripeConnectLastWebhookEvent && (
+                            <p className="text-xs text-green-500 mt-1">
+                              Last event: {stripeConnectLastWebhookEvent} • {stripeConnectLastWebhookTimestamp ? new Date(stripeConnectLastWebhookTimestamp).toLocaleString() : 'Just now'}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <Badge variant="default" className="bg-green-600">
+                        Connected
+                      </Badge>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="p-4 border rounded-lg">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-medium">Account Status</span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => refreshStripeConnectStatusMutation.mutate()}
+                            disabled={refreshStripeConnectStatusMutation.isPending}
+                          >
+                            {refreshStripeConnectStatusMutation.isPending ? (
+                              <RefreshCw className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <RefreshCw className="h-3 w-3" />
+                            )}
+                          </Button>
+                        </div>
+                        <div className="space-y-1 text-sm text-muted-foreground">
+                          <div className="flex items-center gap-2">
+                            <span>Charges:</span>
+                            <Badge
+                              variant={stripeConnectChargesEnabled ? "default" : "secondary"}
+                              className={stripeConnectChargesEnabled ? "bg-green-600 hover:bg-green-700" : ""}
+                            >
+                              {stripeConnectChargesEnabled ? "Enabled" : "Disabled"}
+                            </Badge>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span>Payouts:</span>
+                            <Badge
+                              variant={stripeConnectPayoutsEnabled ? "default" : "secondary"}
+                              className={stripeConnectPayoutsEnabled ? "bg-green-600 hover:bg-green-700" : ""}
+                            >
+                              {stripeConnectPayoutsEnabled ? "Enabled" : "Disabled"}
+                            </Badge>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="p-4 border rounded-lg">
+                        <div className="text-sm font-medium mb-2">Account Details</div>
+                        <div className="space-y-1 text-sm text-muted-foreground">
+                          <p>Account ID: {stripeConnectAccountId?.slice(0, 20)}...</p>
+                          <p>Onboarding: {isStripeConnectOnboardingComplete ? "Complete" : "In Progress"}</p>
+                          <p>Status: <span className="text-green-600">Active</span></p>
+                          {stripeConnectBusinessProfile && typeof stripeConnectBusinessProfile === 'object' ? (
+                            <div className="mt-2 p-2 bg-gray-50 rounded">
+                              <p className="font-medium text-gray-800">Business Profile</p>
+                              <p>{(stripeConnectBusinessProfile as any).name}</p>
+                              <p className="text-xs">{(stripeConnectBusinessProfile as any).product_description}</p>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+
+                    {stripeConnectOnboardingEvents && Array.isArray(stripeConnectOnboardingEvents) && stripeConnectOnboardingEvents.length > 0 ? (
+                      <div className="p-4 border rounded-lg">
+                        <div className="text-sm font-medium mb-2">Recent Onboarding Events</div>
+                        <div className="space-y-2 text-sm">
+                          {(stripeConnectOnboardingEvents as Array<any>).slice(-5).reverse().map((event: any, index: number) => (
+                            <div key={index} className="flex items-center gap-2 p-2 bg-gray-50 rounded">
+                              <div className="text-xs text-muted-foreground w-32 truncate">
+                                {new Date(event.timestamp).toLocaleTimeString()}
+                              </div>
+                              <div className="text-xs font-medium text-green-600">
+                                {event.event}
+                              </div>
+                              <div className="text-xs text-muted-foreground flex-1 truncate">
+                                {JSON.stringify(event.data)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="flex gap-3 pt-4 border-t">
+                      <Button
+                        variant="outline"
+                        onClick={() => refreshStripeConnectStatusMutation.mutate()}
+                        disabled={refreshStripeConnectStatusMutation.isPending}
+                      >
+                        {refreshStripeConnectStatusMutation.isPending ? (
+                          <>
+                            <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                            Refreshing...
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                            Refresh Status
+                          </>
+                        )}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => generateAccountLinkMutation.mutate()}
+                        disabled={generateAccountLinkMutation.isPending}
+                      >
+                        {generateAccountLinkMutation.isPending ? (
+                          <>
+                            <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                            Generating...
+                          </>
+                        ) : (
+                          <>
+                            <Link className="mr-2 h-4 w-4" />
+                            Manage Account
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                  <h4 className="font-medium text-blue-800 mb-2">Benefits of Stripe Connect</h4>
+                  <ul className="text-sm text-blue-700 space-y-1">
+                    <li>• Accept credit cards, ACH, and other payment methods</li>
+                    <li>• Direct payments to your connected Stripe account</li>
+                    <li>• Automatic invoice payment tracking and reconciliation</li>
+                    <li>• PCI DSS compliant and bank-level security</li>
+                    <li>• Real-time payment notifications and webhooks</li>
+                    <li>• Integrated with your existing Stripe account</li>
+                  </ul>
+                </div>
+              </div>
             </CardContent>
           </Card>
         )}

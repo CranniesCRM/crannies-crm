@@ -4,7 +4,7 @@
   "type": "module",
   "license": "Elv2",
   "packageManager": "bun@1.3.2",
-    "engines": {
+  "engines": {
     "node": "20.x"
   },
   "scripts": {
@@ -16,6 +16,7 @@
     "postinstall": "bun run build"
   },
   "dependencies": {
+
     "@hookform/resolvers": "^3.10.0",
     "@jridgewell/trace-mapping": "^0.3.25",
     "@neondatabase/serverless": "^0.10.4",
@@ -52,6 +53,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "convert-csv-to-json": "^3.19.0",
     "cookie-parser": "^1.4.7",
     "date-fns": "^3.6.0",
     "drizzle-orm": "^0.39.1",
@@ -63,6 +65,7 @@
     "lucide-react": "^0.453.0",
     "memorystore": "^1.6.7",
     "next-themes": "^0.4.6",
+    "node-cron": "^3.0.3",
     "react": "^18.3.1",
     "react-day-picker": "^8.10.1",
     "react-dom": "^18.3.1",
@@ -71,7 +74,10 @@
     "react-resizable-panels": "^2.1.7",
     "recharts": "^2.15.2",
     "resend": "^4.0.0",
+    "signature_pad": "^5.1.2",
     "stripe": "^20.0.0",
+    "@stripe/stripe-js": "^4.8.0",
+    "@stripe/react-stripe-js": "^2.10.0",
     "stytch": "^12.43.1",
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",
@@ -80,8 +86,7 @@
     "wouter": "^3.3.5",
     "ws": "^8.18.0",
     "zod": "^3.24.2",
-    "zod-validation-error": "^3.4.0",
-    "node-cron": "^3.0.3"
+    "zod-validation-error": "^3.4.0"
   },
   "devDependencies": {
     "@replit/vite-plugin-cartographer": "^0.4.4",
