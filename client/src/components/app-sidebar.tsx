@@ -37,9 +37,10 @@ import type { User, Workspace } from "@shared/schema";
 
 const mainNavItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
-  { title: "Issues", url: "/issues", icon: CircleDot },
+  // { title: "Feed", url: "/feed", icon: InboxIcon },
   { title: "Payables", url: "/payables", icon: FileOutputIcon },
-  { title: "Receivables", url: "/recievables", icon: DollarSign },
+  { title: "Receivables", url: "/receivables", icon: DollarSign },
+  { title: "Vendors", url: "/vendors", icon: Building2 },
   { title: "Team", url: "/team", icon: Users },
 ];
 
@@ -119,14 +120,6 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton asChild tooltip="New Issue">
-                  <Link href="/issues/new" data-testid="nav-new-issue">
-                    <Plus className="h-4 w-4" />
-                    <span>New Issue</span>
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-              <SidebarMenuItem>
                 <SidebarMenuButton asChild tooltip="New Vendor">
                   <Link href="/vendors#new" data-testid="nav-new-vendor">
                     <Building2 className="h-4 w-4" />
@@ -136,7 +129,7 @@ export function AppSidebar() {
               </SidebarMenuItem>
               <SidebarMenuItem>
                 <SidebarMenuButton asChild tooltip="New Invoice">
-                  <Link href="/recievables/invoices/new" data-testid="nav-new-invoice">
+                  <Link href="/receivables/invoices/new" data-testid="nav-new-invoice">
                     <CreditCard className="h-4 w-4" />
                     <span>New Invoice</span>
                   </Link>

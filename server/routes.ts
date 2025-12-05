@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated } from "./stytchAuth";
-import { sendChatInvitation, sendTeamInvitation, sendInvoiceEmail } from "./resend";
+import { sendTeamInvitation, sendInvoiceEmail } from "./resend";
 // Removed PDF generator import - now using hosted pages approach
 import { randomBytes } from "crypto";
 import { z } from "zod";
@@ -10,16 +10,7 @@ import { calculateTrialEndDate } from "../shared/trial";
 import { calculateInvoiceTotals, validateLineItems, TAX_OPTIONS, type LineItem } from "./utils/calculations";
 import { getPusher, triggerChannelEvent } from "./pusher";
 import { createRfpMagicLinkToken, consumeRfpMagicLinkToken } from "./rfpMagicLinks";
-import {
-  ensureChannelWithMembers,
-  ensureStreamUser,
-  encodeStreamIdentifier,
-  getStreamChatServer,
-  getStreamEnvironment,
-  getStreamFeedClient,
-  sanitizeImageValue,
-  type StreamIdentity,
-} from "./stream";
+import type { ConversationMessage, IssueWithDetails, Rfp, User, Workspace } from "../shared/schema";
 import Stripe from "stripe";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
@@ -30,6 +21,129 @@ const toCents = (value?: number | null) => {
     return 0;
   }
   return Math.round(Number(value) * 100);
+};
+
+type ConversationAuthorProfile = {
+  type: "internal" | "vendor" | "contact";
+  name: string;
+  email?: string | null;
+  avatarUrl?: string | null;
+  company?: string | null;
+  companyLogo?: string | null;
+};
+
+type ConversationMessageDto = {
+  id: string;
+  content: string;
+  parentMessageId: string | null;
+  rootMessageId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  author: ConversationAuthorProfile;
+};
+
+const sanitizeImageValue = (image?: string | null) => {
+  if (!image) return undefined;
+  const trimmed = image.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith("data:")) {
+    return undefined;
+  }
+  if (trimmed.length > 2048) {
+    return undefined;
+  }
+  return trimmed;
+};
+
+const serializeConversationMessage = (message: ConversationMessage): ConversationMessageDto => ({
+  id: message.id,
+  content: message.content,
+  parentMessageId: message.parentMessageId || null,
+  rootMessageId: message.rootMessageId || message.parentMessageId || message.id,
+  createdAt: message.createdAt ? new Date(message.createdAt).toISOString() : new Date().toISOString(),
+  updatedAt: message.updatedAt ? new Date(message.updatedAt).toISOString() : new Date().toISOString(),
+  author: {
+    type: (message.authorType as ConversationAuthorProfile["type"]) || "internal",
+    name: message.authorName || "Guest",
+    email: message.authorEmail || null,
+    avatarUrl: message.authorAvatarUrl || null,
+    company: message.authorCompany || null,
+    companyLogo: message.authorCompanyLogo || null,
+  },
+});
+
+const createConversationMetadata = (profile: ConversationAuthorProfile) => ({
+  authorType: profile.type,
+  authorName: profile.name,
+  authorEmail: profile.email || null,
+  authorAvatarUrl: profile.avatarUrl || null,
+  authorCompany: profile.company || null,
+  authorCompanyLogo: profile.companyLogo || null,
+});
+
+const formatUserName = (user?: User | null) => {
+  if (!user) return "";
+  return `${user.firstName || ""} ${user.lastName || ""}`.trim();
+};
+
+const buildInternalProfile = (user: User, workspace?: Workspace | null): ConversationAuthorProfile => ({
+  type: "internal",
+  name: formatUserName(user) || user.email || "Workspace user",
+  email: user.email,
+  avatarUrl: sanitizeImageValue(user.profileImageUrl) || null,
+  company: workspace?.name || null,
+  companyLogo: sanitizeImageValue(workspace?.logoUrl || undefined) || null,
+});
+
+const buildContactProfile = (
+  issue: IssueWithDetails,
+  contact: { name?: string | null; email?: string | null },
+): ConversationAuthorProfile => ({
+  type: "contact",
+  name: contact.name || issue.contactName || contact.email || "Guest",
+  email: contact.email || issue.contactEmail || null,
+  avatarUrl: null,
+  company: issue.contactCompany || null,
+  companyLogo: null,
+});
+
+const buildVendorProfile = (input: {
+  email: string;
+  name?: string | null;
+  company?: string | null;
+  logoUrl?: string | null;
+}): ConversationAuthorProfile => ({
+  type: "vendor",
+  name: input.name || input.email,
+  email: input.email,
+  avatarUrl: sanitizeImageValue(input.logoUrl || undefined) || null,
+  company: input.company || null,
+  companyLogo: sanitizeImageValue(input.logoUrl || undefined) || null,
+});
+
+type InternalVendorConversationArgs = {
+  issue: IssueWithDetails;
+  rfp: Rfp;
+  vendorEmail: string;
+  workspace: Workspace;
+  user: User;
+};
+
+type InternalVendorConversationPayload = {
+  viewerProfile: ConversationAuthorProfile;
+  teamMembers: Array<{
+    id: string;
+    name: string;
+    email?: string | null;
+    image?: string | null;
+    role?: string | null;
+  }>;
+  messages: ConversationMessage[];
+  vendorEmail: string;
+  vendorName: string;
+  vendorLogo?: string | null;
+  proposalCount: number;
+  latestProposalId: string | null;
 };
 
 
@@ -162,20 +276,6 @@ async function resolveIssueChatViewer(req: any, issue: any) {
   return { type: "anonymous" as const };
 }
 
-function normalizeStreamActor(actor: any) {
-  if (!actor) {
-    return { id: "unknown", name: "Unknown" };
-  }
-  if (typeof actor === "string") {
-    const [, rawId] = actor.split(":");
-    return { id: rawId || actor, name: rawId || "Unknown" };
-  }
-  const id = actor.id || actor.data?.id || "unknown";
-  const name = actor.name || actor.data?.name || "Unknown";
-  const image = actor.image || actor.data?.image || actor.data?.profileImage || null;
-  return { id, name, image };
-}
-
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -192,38 +292,6 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching user:", error);
       res.status(500).json({ message: "Failed to fetch user" });
-    }
-  });
-
-  app.get("/api/rfp/chat/verify", async (req: any, res) => {
-    try {
-      const { token, email, id } = req.query as { token?: string; email?: string; id?: string };
-      if (!token || !email || !id) {
-        return res.status(400).json({ message: "Missing token, email, or id" });
-      }
-
-      const rfp = await storage.getRfp(id);
-      if (!rfp) {
-        return res.status(404).json({ message: "RFP not found" });
-      }
-
-      const valid = consumeRfpMagicLinkToken(token, id, email);
-      if (!valid) {
-        return res.status(401).json({ message: "Invalid or expired magic link" });
-      }
-
-      const cookieValue = Buffer.from(JSON.stringify({ email: email.toLowerCase() })).toString("base64");
-      res.cookie(getRfpChatCookieName(id), cookieValue, {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: isProduction,
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
-
-      res.json({ success: true });
-    } catch (error) {
-      console.error("Error verifying RFP chat link:", error);
-      res.status(500).json({ message: "Failed to verify magic link" });
     }
   });
 
@@ -313,18 +381,25 @@ export async function registerRoutes(
                 if (dealData.dealValue) {
                   dealValue = parseInt(dealData.dealValue.toString()) || null;
                 }
+
+                const normalizedEmail =
+                  typeof dealData.contactEmail === "string"
+                    ? dealData.contactEmail.trim().toLowerCase()
+                    : null;
                 
                 const issue = await storage.createIssue({
                   workspaceId: user.workspaceId,
                   title: dealData.title || 'Untitled Deal',
                   description: dealData.description || '',
                   contactName: dealData.contactName || '',
-                  contactEmail: dealData.contactEmail || '',
+                  contactEmail: normalizedEmail,
                   contactCompany: dealData.contactCompany || '',
                   dealValue: dealValue,
                   labels: dealData.labels || [],
                   createdById: userId,
                   status: dealData.status || "open",
+                  issueType: "deal",
+                  rfpId: null,
                 });
 
                 console.log('Deal created successfully:', issue.id, issue.title);
@@ -403,618 +478,6 @@ export async function registerRoutes(
     }
   });
 
-  // Issues
-  app.get("/api/issues", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
-      if (!user?.workspaceId) {
-        return res.json([]);
-      }
-      const status = req.query.status as string | undefined;
-      const issues = await storage.getIssuesByWorkspace(user.workspaceId, status);
-      res.json(issues);
-    } catch (error) {
-      console.error("Error fetching issues:", error);
-      res.status(500).json({ message: "Failed to fetch issues" });
-    }
-  });
-
-  app.get("/api/issues/:id", isAuthenticated, async (req: any, res) => {
-    try {
-      const issue = await storage.getIssueWithDetails(req.params.id);
-      if (!issue) {
-        return res.status(404).json({ message: "Issue not found" });
-      }
-      res.json(issue);
-    } catch (error) {
-      console.error("Error fetching issue:", error);
-      res.status(500).json({ message: "Failed to fetch issue" });
-    }
-  });
-
-  app.get("/api/issues/:id/team-chat", isAuthenticated, async (req: any, res) => {
-    try {
-      const issue = await storage.getIssueWithDetails(req.params.id);
-      if (!issue) {
-        return res.status(404).json({ message: "Issue not found" });
-      }
-      const teamMembers = issue.workspaceId
-        ? await storage.getUsersByWorkspace(issue.workspaceId)
-        : [];
-      res.json({
-        issue,
-        comments: await storage.getCommentsByIssue(issue.id),
-        teamMembers,
-      });
-    } catch (error) {
-      console.error("Error fetching team chat:", error);
-      res.status(500).json({ message: "Failed to fetch team chat" });
-    }
-  });
-
-  app.post("/api/issues", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
-      if (!user?.workspaceId) {
-        return res.status(400).json({ message: "User not in a workspace" });
-      }
-
-      // Convert dealValue to integer if it's a string
-      let dealValue = null;
-      if (req.body.dealValue) {
-        dealValue = parseInt(req.body.dealValue.toString()) || null;
-      }
-
-      const issue = await storage.createIssue({
-        workspaceId: user.workspaceId,
-        title: req.body.title,
-        description: req.body.description,
-        contactName: req.body.contactName,
-        contactEmail: req.body.contactEmail,
-        contactCompany: req.body.contactCompany,
-        dealValue: dealValue,
-        labels: req.body.labels,
-        createdById: userId,
-        status: "open",
-      });
-
-      // Log activity
-      await storage.createActivity({
-        issueId: issue.id,
-        userId,
-        action: "created",
-      });
-
-      const issueWithDetails = await storage.getIssueWithDetails(issue.id);
-      res.json(issueWithDetails);
-    } catch (error) {
-      console.error("Error creating issue:", error);
-      res.status(500).json({ message: "Failed to create issue" });
-    }
-  });
-
-  app.post("/api/issues/bulk", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
-      if (!user?.workspaceId) {
-        return res.status(400).json({ message: "User not in a workspace" });
-      }
-
-      const issues = req.body.issues;
-      if (!Array.isArray(issues)) {
-        return res.status(400).json({ message: "issues must be an array" });
-      }
-
-      if (issues.length === 0) {
-        return res.status(400).json({ message: "issues array cannot be empty" });
-      }
-
-      if (issues.length > 100) {
-        return res.status(400).json({ message: "Cannot create more than 100 issues at once" });
-      }
-
-      const createdIssues = [];
-
-      for (const issueData of issues) {
-        try {
-          // Convert dealValue to integer if it's a string
-          let dealValue = null;
-          if (issueData.dealValue) {
-            dealValue = parseInt(issueData.dealValue.toString()) || null;
-          }
-          
-          const issue = await storage.createIssue({
-            workspaceId: user.workspaceId,
-            title: issueData.title,
-            description: issueData.description,
-            contactName: issueData.contactName,
-            contactEmail: issueData.contactEmail,
-            contactCompany: issueData.contactCompany,
-            dealValue: dealValue,
-            labels: issueData.labels,
-            createdById: userId,
-            status: issueData.status || "open",
-          });
-
-          // Log activity
-          await storage.createActivity({
-            issueId: issue.id,
-            userId,
-            action: "created",
-          });
-
-          const issueWithDetails = await storage.getIssueWithDetails(issue.id);
-          createdIssues.push(issueWithDetails);
-        } catch (error) {
-          console.error("Error creating issue in bulk:", error);
-          // Continue with other issues even if one fails
-        }
-      }
-
-      res.json({
-        created: createdIssues.length,
-        issues: createdIssues,
-        totalRequested: issues.length
-      });
-    } catch (error) {
-      console.error("Error creating issues in bulk:", error);
-      res.status(500).json({ message: "Failed to create issues" });
-    }
-  });
-
-  app.patch("/api/issues/:id", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      await storage.updateIssue(req.params.id, req.body);
-
-      if (req.body.status) {
-        await storage.createActivity({
-          issueId: req.params.id,
-          userId,
-          action: "status_changed",
-          metadata: { newStatus: req.body.status },
-        });
-      }
-
-      const issueWithDetails = await storage.getIssueWithDetails(req.params.id);
-      res.json(issueWithDetails);
-    } catch (error) {
-      console.error("Error updating issue:", error);
-      res.status(500).json({ message: "Failed to update issue" });
-    }
-  });
-
-  app.delete("/api/issues/:id", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
-      if (!user?.workspaceId) {
-        return res.status(403).json({ message: "User not in a workspace" });
-      }
-
-      const issue = await storage.getIssue(req.params.id);
-      if (!issue) {
-        return res.status(404).json({ message: "Issue not found" });
-      }
-
-      if (issue.workspaceId !== user.workspaceId) {
-        return res.status(403).json({ message: "Not authorized to delete this issue" });
-      }
-
-      await storage.deleteIssue(issue.id);
-      await storage.createActivity({
-        issueId: issue.id,
-        userId,
-        action: "deleted",
-      });
-
-      res.json({ success: true });
-    } catch (error) {
-      console.error("Error deleting issue:", error);
-      res.status(500).json({ message: "Failed to delete issue" });
-    }
-  });
-
-  // Comments
-  app.post("/api/issues/:id/comments", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
-
-      const comment = await storage.createComment({
-        issueId: req.params.id,
-        authorId: userId,
-        content: req.body.content,
-        isClientComment: false,
-      });
-
-      await storage.createActivity({
-        issueId: req.params.id,
-        userId,
-        action: "commented",
-      });
-
-      res.json(comment);
-    } catch (error) {
-      console.error("Error creating comment:", error);
-      res.status(500).json({ message: "Failed to create comment" });
-    }
-  });
-
-  app.delete("/api/issues/:id/comments/:commentId", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      const { id: issueId, commentId } = req.params;
-
-      // Get user to check authorization
-      const user = await storage.getUser(userId);
-      if (!user) {
-        return res.status(401).json({ message: "User not found" });
-      }
-
-      // For now, only admins can delete comments (prevent accidental deletion)
-      if (!user.isAdmin) {
-        return res.status(403).json({ message: "Only admins can delete comments" });
-      }
-
-      // Delete the comment via database
-      const { db } = await import("./db");
-      const { comments } = await import("../shared/schema");
-      const { eq } = await import("drizzle-orm");
-      
-      const [comment] = await db.select().from(comments).where(eq(comments.id, commentId));
-      
-      if (!comment) {
-        return res.status(404).json({ message: "Comment not found" });
-      }
-
-      await db.delete(comments).where(eq(comments.id, commentId));
-
-      await storage.createActivity({
-        issueId,
-        userId,
-        action: "deleted_comment",
-      });
-
-      res.json({ success: true });
-    } catch (error) {
-      console.error("Error deleting comment:", error);
-      res.status(500).json({ message: "Failed to delete comment" });
-    }
-  });
-
-  app.get("/api/issues/:id/feed", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
-      const issue = await storage.getIssue(req.params.id);
-      if (!issue) {
-        return res.status(404).json({ message: "Issue not found" });
-      }
-      if (!user?.workspaceId || user.workspaceId !== issue.workspaceId) {
-        return res.status(403).json({ message: "Not authorized" });
-      }
-
-      const feedClient = getStreamFeedClient();
-      if (!feedClient) {
-        return res.status(503).json({ message: "Activity feed is not configured" });
-      }
-
-      const feed = feedClient.feed("issue", issue.id);
-      const response = await feed.get({ limit: 50, enrich: true });
-      const entries = response.results.map((activity: any) => {
-        const actor = normalizeStreamActor(activity.actor);
-        return {
-          id: activity.id,
-          text: activity.text || activity.message || "",
-          createdAt: activity.time,
-          actor,
-          mentions: activity.mentions || [],
-          attachments: activity.attachments || [],
-        };
-      });
-
-      res.json(entries);
-    } catch (error) {
-      console.error("Error fetching issue feed:", error);
-      res.status(500).json({ message: "Failed to load activity feed" });
-    }
-  });
-
-  app.post("/api/issues/:id/feed", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
-      const issue = await storage.getIssue(req.params.id);
-
-      if (!issue) {
-        return res.status(404).json({ message: "Issue not found" });
-      }
-      if (!user?.workspaceId || user.workspaceId !== issue.workspaceId) {
-        return res.status(403).json({ message: "Not authorized" });
-      }
-
-      const { content } = req.body || {};
-      if (!content || typeof content !== "string" || !content.trim()) {
-        return res.status(400).json({ message: "Content is required" });
-      }
-
-      const feedClient = getStreamFeedClient();
-      if (!feedClient) {
-        return res.status(503).json({ message: "Activity feed is not configured" });
-      }
-
-      const identity: StreamIdentity = {
-        id: user.id,
-        name:
-          `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
-          user.email ||
-          "Workspace user",
-        image: sanitizeImageValue(user.profileImageUrl),
-        email: user.email,
-      };
-      await ensureStreamUser(identity);
-
-      const mentions = Array.from(content.matchAll(/@(\w+)/g)).map((match) => match[1]);
-
-      const feed = feedClient.feed("issue", issue.id);
-      const activity = await feed.addActivity({
-        actor: `user:${user.id}`,
-        verb: "note",
-        object: `issue:${issue.id}`,
-        text: content.trim(),
-        issueId: issue.id,
-        mentions,
-      });
-
-      res.json({
-        id: activity.id,
-        text: activity.text,
-        createdAt: activity.time,
-        actor: identity,
-        mentions,
-      });
-    } catch (error) {
-      console.error("Error posting to issue feed:", error);
-      res.status(500).json({ message: "Failed to post to feed" });
-    }
-  });
-
-  app.delete("/api/issues/:issueId/feed/:activityId", isAuthenticated, async (req: any, res) => {
-    try {
-      const { issueId, activityId } = req.params;
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
-      const issue = await storage.getIssue(issueId);
-      if (!issue) {
-        return res.status(404).json({ message: "Issue not found" });
-      }
-      if (!user?.workspaceId || user.workspaceId !== issue.workspaceId) {
-        return res.status(403).json({ message: "Not authorized" });
-      }
-      if (!user.isAdmin) {
-        return res.status(403).json({ message: "Only admins can delete feed entries" });
-      }
-
-      const feedClient = getStreamFeedClient();
-      if (!feedClient) {
-        return res.status(503).json({ message: "Activity feed is not configured" });
-      }
-
-      const feed = feedClient.feed("issue", issue.id);
-      await feed.removeActivity(activityId);
-      res.status(204).end();
-    } catch (error) {
-      console.error("Error deleting issue feed activity:", error);
-      res.status(500).json({ message: "Failed to delete activity" });
-    }
-  });
-
-  // Publish issue
-  app.post("/api/issues/:id/publish", isAuthenticated, async (req: any, res) => {
-    try {
-      const issue = await storage.getIssue(req.params.id);
-      if (!issue) {
-        return res.status(404).json({ message: "Issue not found" });
-      }
-
-      const passcode = generatePasscode();
-      const slug = generateSlug();
-
-      await storage.updateIssue(req.params.id, {
-        isPublished: true,
-        publishedPasscode: passcode,
-        publishedSlug: slug,
-      });
-
-      // Send email if provided
-      if (req.body.email) {
-        const protocol = req.protocol;
-        const host = req.get("host");
-        const chatLink = `${protocol}://${host}/chat/${slug}`;
-        
-        try {
-          await sendChatInvitation(req.body.email, chatLink, passcode, issue.title);
-        } catch (emailError) {
-          console.error("Failed to send email:", emailError);
-          // Continue even if email fails
-        }
-      }
-
-      res.json({ slug, passcode });
-    } catch (error) {
-      console.error("Error publishing issue:", error);
-      res.status(500).json({ message: "Failed to publish issue" });
-    }
-  });
-
-  app.post("/api/issues/:id/unpublish", isAuthenticated, async (req: any, res) => {
-    try {
-      await storage.updateIssue(req.params.id, {
-        isPublished: false,
-        publishedPasscode: null,
-        publishedSlug: null,
-      });
-      res.json({ success: true });
-    } catch (error) {
-      console.error("Error unpublishing issue:", error);
-      res.status(500).json({ message: "Failed to unpublish issue" });
-    }
-  });
-
-  app.post("/api/pusher/auth", (req, res) => {
-    const pusher = getPusher();
-    if (!pusher) {
-      return res.status(503).json({ message: "Realtime service is disabled" });
-    }
-
-    const socketId = req.body?.socket_id || req.body?.socketId;
-    const channelName = req.body?.channel_name || req.body?.channelName;
-
-    if (!socketId || !channelName) {
-      return res.status(400).json({ message: "Missing socket or channel identifiers" });
-    }
-
-    const {
-      participantId,
-      participantName,
-      participantEmail,
-      participantAvatar,
-    } = req.query as Record<string, string | undefined>;
-
-    const userId =
-      (participantId && participantId.toString()) ||
-      (participantEmail && participantEmail.toString()) ||
-      generateToken(6);
-
-    const displayName =
-      (participantName && participantName.toString()) ||
-      (participantEmail && participantEmail.toString()) ||
-      "Guest";
-
-    const presenceData = {
-      user_id: userId,
-      user_info: {
-        name: displayName,
-        email: participantEmail,
-        avatar: participantAvatar,
-      },
-    };
-
-    try {
-      if (channelName.startsWith("presence-")) {
-        const auth = pusher.authorizeChannel(socketId, channelName, presenceData);
-        return res.send(auth);
-      }
-
-      if (channelName.startsWith("private-")) {
-        const auth = pusher.authorizeChannel(socketId, channelName);
-        return res.send(auth);
-      }
-
-      return res.status(400).json({ message: "Unsupported channel type" });
-    } catch (error) {
-      console.error("Pusher auth error:", error);
-      return res.status(500).json({ message: "Failed to authorize channel" });
-    }
-  });
-
-  // Public chat routes (no auth required, but passcode protected)
-  app.get("/api/chat/:slug/auth-check", (req, res) => {
-    const cookieName = `chat_${req.params.slug}`;
-    const cookie = req.cookies?.[cookieName];
-    
-    if (cookie) {
-      try {
-        const data = JSON.parse(Buffer.from(cookie, "base64").toString());
-        res.json({ authenticated: true, clientName: data.name });
-      } catch {
-        res.json({ authenticated: false });
-      }
-    } else {
-      res.json({ authenticated: false });
-    }
-  });
-
-  app.post("/api/chat/:slug/verify", async (req, res) => {
-    try {
-      const issue = await storage.getIssueBySlug(req.params.slug);
-      if (!issue || !issue.isPublished) {
-        return res.status(404).json({ message: "Chat not found" });
-      }
-
-      if (issue.publishedPasscode !== req.body.passcode) {
-        return res.status(401).json({ message: "Invalid passcode" });
-      }
-
-      // Set cookie
-      const cookieName = `chat_${req.params.slug}`;
-      const cookieValue = Buffer.from(JSON.stringify({ name: req.body.name })).toString("base64");
-
-      res.cookie(cookieName, cookieValue, {
-        httpOnly: true,
-        secure: true,
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 1 week
-      });
-
-      res.json({
-        success: true,
-        contactEmail: issue.contactEmail,
-        issueId: issue.id
-      });
-    } catch (error) {
-      console.error("Error verifying passcode:", error);
-      res.status(500).json({ message: "Failed to verify" });
-    }
-  });
-
-  app.get("/api/chat/:slug", async (req, res) => {
-    try {
-      const issue = await storage.getIssueBySlug(req.params.slug);
-      if (!issue || !issue.isPublished) {
-        return res.status(404).json({ message: "Chat not found" });
-      }
-
-      const comments = await storage.getCommentsByIssue(issue.id);
-      const teamMembers = issue.workspaceId
-        ? await storage.getUsersByWorkspace(issue.workspaceId)
-        : [];
-
-      res.json({
-        issue,
-        comments,
-        teamMembers,
-      });
-    } catch (error) {
-      console.error("Error fetching chat:", error);
-      res.status(500).json({ message: "Failed to fetch chat" });
-    }
-  });
-
-  app.post("/api/chat/:slug/message", async (req, res) => {
-    try {
-      const issue = await storage.getIssueBySlug(req.params.slug);
-      if (!issue || !issue.isPublished) {
-        return res.status(404).json({ message: "Chat not found" });
-      }
-
-      const comment = await storage.createComment({
-        issueId: issue.id,
-        authorName: req.body.authorName,
-        content: req.body.content,
-        isClientComment: true,
-      });
-
-      res.json(comment);
-    } catch (error) {
-      console.error("Error sending message:", error);
-      res.status(500).json({ message: "Failed to send message" });
-    }
-  });
-
   app.get("/api/chat/customer/auth", (req, res) => {
     const { issueId } = req.query as { issueId?: string };
     if (!issueId) {
@@ -1064,315 +527,6 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error verifying customer chat:", error);
       res.status(500).json({ message: "Failed to verify chat access" });
-    }
-  });
-
-  app.get("/api/stream/chat/customer", async (req: any, res) => {
-    try {
-      const { issueId } = req.query as { issueId?: string };
-      if (!issueId) {
-        return res.status(400).json({ message: "issueId is required" });
-      }
-
-      const issue = await storage.getIssueWithDetails(issueId);
-      if (!issue || !issue.isPublished) {
-        return res.status(404).json({ message: "Chat not found" });
-      }
-
-      const viewer = await resolveIssueChatViewer(req, issue);
-      if (viewer.type === "anonymous") {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-
-      const chat = getStreamChatServer();
-      const streamEnv = getStreamEnvironment();
-      if (!chat || !streamEnv.key) {
-        return res.status(503).json({ message: "Stream chat is not configured" });
-      }
-
-      const viewerIdentity =
-        viewer.type === "internal"
-          ? {
-              id: viewer.user.id,
-              name:
-                `${viewer.user.firstName || ""} ${viewer.user.lastName || ""}`.trim() ||
-                viewer.user.email ||
-                "Workspace user",
-              image: sanitizeImageValue(viewer.user.profileImageUrl),
-              email: viewer.user.email,
-            }
-          : {
-              id: encodeStreamIdentifier(
-                `issue-${issue.id}-contact`,
-                viewer.email || viewer.name || `guest-${Date.now()}`,
-              ),
-              name: viewer.name || viewer.email || "Guest",
-              email: viewer.email,
-            };
-
-      const teamIdentities: StreamIdentity[] = [];
-      const identityDirectory = new Map<string, StreamIdentity>();
-      const registerIdentity = (identity?: StreamIdentity | null) => {
-        if (!identity) return;
-        identityDirectory.set(identity.id, identity);
-      };
-
-      const seenInternal = new Set<string>();
-      const pushInternal = (user: any) => {
-        if (!user?.id || seenInternal.has(user.id)) return;
-        seenInternal.add(user.id);
-        const identity: StreamIdentity = {
-          id: user.id,
-          name: `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Workspace user",
-          image: sanitizeImageValue(user.profileImageUrl),
-          email: user.email,
-        };
-        teamIdentities.push(identity);
-        registerIdentity(identity);
-      };
-
-      if (issue.createdBy) {
-        pushInternal(issue.createdBy);
-      }
-      (issue.assignees || []).forEach((assignee: any) => pushInternal(assignee));
-
-      let contactIdentity: StreamIdentity | null = null;
-      if (viewer.type === "contact") {
-        contactIdentity = {
-          ...viewerIdentity,
-          image: sanitizeImageValue(viewerIdentity.image),
-        };
-      } else if (issue.contactEmail || issue.contactName) {
-        contactIdentity = {
-          id: encodeStreamIdentifier(
-            `issue-${issue.id}-contact`,
-            issue.contactEmail || issue.contactName || "contact",
-          ),
-          name: issue.contactName || issue.contactEmail || "Client",
-          email: issue.contactEmail || undefined,
-          image: sanitizeImageValue(issue.createdBy?.clientLogoUrl),
-        };
-      }
-
-      registerIdentity(viewerIdentity);
-      registerIdentity(contactIdentity);
-
-      await Promise.all(
-        Array.from(identityDirectory.values()).map(async (identity) => ensureStreamUser(identity)),
-      );
-
-      const memberIds = new Set<string>();
-      teamIdentities.forEach((identity) => memberIds.add(identity.id));
-      if (contactIdentity) {
-        memberIds.add(contactIdentity.id);
-      }
-
-      const channelId = encodeStreamIdentifier("issue", issue.id);
-      const createdById =
-        viewer.type === "internal"
-          ? viewer.user.id
-          : teamIdentities[0]?.id || contactIdentity?.id || viewerIdentity.id;
-
-      const channel = chat.channel("messaging", channelId, {
-        name: issue.chatTitle || issue.title,
-        issue_id: issue.id,
-        issue_number: issue.issueNumber,
-        workspace_id: issue.workspaceId,
-        created_by_id: createdById,
-      });
-      await ensureChannelWithMembers(channel, Array.from(memberIds));
-
-      const token = chat.createToken(viewerIdentity.id);
-
-      res.json({
-        apiKey: streamEnv.key,
-        appId: streamEnv.appId,
-        token,
-        user: viewerIdentity,
-        channel: {
-          id: channelId,
-          type: "messaging",
-          name: issue.chatTitle || issue.title,
-          data: {
-            issueId: issue.id,
-            issueNumber: issue.issueNumber,
-            workspaceId: issue.workspaceId,
-          },
-        },
-        context: {
-          type: "customer",
-          issue: {
-            id: issue.id,
-            title: issue.title,
-            issueNumber: issue.issueNumber,
-            status: issue.status,
-            contactName: issue.contactName,
-            contactEmail: issue.contactEmail,
-            contactCompany: issue.contactCompany,
-          },
-          contact: contactIdentity,
-          team: teamIdentities,
-        },
-      });
-    } catch (error) {
-      console.error("Error loading customer chat:", error);
-      res.status(500).json({ message: "Failed to load chat" });
-    }
-  });
-
-  app.get("/api/stream/chat/vendor", async (req: any, res) => {
-    try {
-      const { rfpId, email } = req.query as { rfpId?: string; email?: string };
-      if (!rfpId) {
-        return res.status(400).json({ message: "rfpId is required" });
-      }
-
-      const rfp = await storage.getRfp(rfpId);
-      if (!rfp) {
-        return res.status(404).json({ message: "RFP not found" });
-      }
-
-      const viewer = await resolveRfpChatViewer(req, rfp);
-      if (viewer.type === "anonymous") {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-
-      const vendorEmailRaw =
-        viewer.type === "vendor"
-          ? viewer.email
-          : typeof email === "string"
-          ? email
-          : undefined;
-
-      if (!vendorEmailRaw) {
-        return res.status(400).json({ message: "Vendor email is required" });
-      }
-
-      if (vendorEmailRaw.length > 320) {
-        return res.status(400).json({ message: "Email is too long" });
-      }
-
-      const vendorEmail = vendorEmailRaw.toLowerCase();
-
-      const vendorRecord = await storage.getVendorByEmail(vendorEmail);
-      const proposals = await storage.getProposalsByRfpAndEmail(rfpId, vendorEmail);
-      if (viewer.type === "vendor" && proposals.length === 0) {
-        return res.status(403).json({ message: "No proposal found for this email" });
-      }
-
-      const latestProposal = proposals[0];
-      const vendorIdentity: StreamIdentity = {
-        id: vendorRecord?.id || encodeStreamIdentifier(`vendor-${rfpId}`, vendorEmail),
-        name:
-          vendorRecord?.name ||
-          latestProposal?.company ||
-          vendorEmail.split("@")[0] ||
-          "Vendor",
-        image: sanitizeImageValue(vendorRecord?.logoUrl || latestProposal?.vendorLogoUrl || undefined),
-        email: vendorEmail,
-      };
-
-      const chat = getStreamChatServer();
-      const streamEnv = getStreamEnvironment();
-      if (!chat || !streamEnv.key) {
-        return res.status(503).json({ message: "Stream chat is not configured" });
-      }
-
-      const viewerIdentity =
-        viewer.type === "internal"
-          ? {
-              id: viewer.user.id,
-              name:
-                `${viewer.user.firstName || ""} ${viewer.user.lastName || ""}`.trim() ||
-                viewer.user.email ||
-                "Workspace user",
-              image: sanitizeImageValue(viewer.user.profileImageUrl),
-              email: viewer.user.email,
-            }
-          : vendorIdentity;
-
-      const identityDirectory = new Map<string, StreamIdentity>();
-      const registerIdentity = (identity?: StreamIdentity | null) => {
-        if (!identity) return;
-        identityDirectory.set(identity.id, identity);
-      };
-
-      const teamMembersRaw = await storage.getUsersByWorkspace(rfp.workspaceId);
-      const teamIdentities: StreamIdentity[] = teamMembersRaw.map((member) => ({
-        id: member.id,
-        name:
-          `${member.firstName || ""} ${member.lastName || ""}`.trim() ||
-          member.email ||
-          "Workspace user",
-        image: sanitizeImageValue(member.profileImageUrl),
-        email: member.email,
-      }));
-      teamIdentities.forEach((identity) => registerIdentity(identity));
-
-      registerIdentity(vendorIdentity);
-      registerIdentity(viewerIdentity);
-
-      await Promise.all(
-        Array.from(identityDirectory.values()).map(async (identity) => ensureStreamUser(identity)),
-      );
-
-      const memberIds = new Set<string>();
-      teamIdentities.forEach((identity) => memberIds.add(identity.id));
-      memberIds.add(vendorIdentity.id);
-
-      const channelId = encodeStreamIdentifier("vendor", `${rfpId}-${vendorIdentity.id}`);
-      const channelCreatorId =
-        viewer.type === "internal"
-          ? viewer.user.id
-          : teamIdentities[0]?.id || vendorIdentity.id;
-
-      const channel = chat.channel("messaging", channelId, {
-        name: `${rfp.title} • ${vendorIdentity.name}`,
-        rfp_id: rfp.id,
-        vendor_email: vendorEmail,
-        created_by_id: channelCreatorId,
-      });
-      await ensureChannelWithMembers(channel, Array.from(memberIds));
-
-      const token = chat.createToken(viewerIdentity.id);
-
-      res.json({
-        apiKey: streamEnv.key,
-        appId: streamEnv.appId,
-        token,
-        user: viewerIdentity,
-        channel: {
-          id: channelId,
-          type: "messaging",
-          name: `${rfp.title} • ${vendorIdentity.name}`,
-          data: {
-            rfpId: rfp.id,
-            vendorEmail,
-            workspaceId: rfp.workspaceId,
-          },
-        },
-        context: {
-          type: "vendor",
-          rfp: {
-            id: rfp.id,
-            title: rfp.title,
-            companyName: rfp.companyName,
-            status: rfp.status,
-            deadline: rfp.deadline,
-          },
-          vendor: {
-            name: vendorIdentity.name,
-            email: vendorEmail,
-            logoUrl: vendorIdentity.image,
-            proposalCount: proposals.length,
-            latestProposalId: latestProposal?.id,
-          },
-          team: teamIdentities,
-        },
-      });
-    } catch (error) {
-      console.error("Error loading vendor chat:", error);
-      res.status(500).json({ message: "Failed to load chat" });
     }
   });
 
@@ -1787,6 +941,51 @@ export async function registerRoutes(
     }
   });
 
+  app.patch("/api/payables/purchase-invoices/:id/status", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const user = await storage.getUser(userId);
+      if (!user?.workspaceId) {
+        return res.status(403).json({ message: "Workspace not found" });
+      }
+
+      const invoiceId = req.params.id;
+      const { status } = req.body;
+
+      if (!status) {
+        return res.status(400).json({ message: "Status is required" });
+      }
+
+      // Verify the invoice belongs to the user's workspace
+      const invoice = await storage.getPurchaseInvoice(invoiceId);
+      if (!invoice || invoice.workspaceId !== user.workspaceId) {
+        return res.status(404).json({ message: "Invoice not found" });
+      }
+
+      // Update the invoice status
+      const updateData: any = {
+        status,
+        updatedAt: new Date(),
+      };
+
+      // If marking as paid, set the paid date
+      if (status === 'paid') {
+        updateData.paidDate = new Date();
+      }
+
+      const updatedInvoice = await storage.updatePurchaseInvoice(invoiceId, updateData);
+
+      if (!updatedInvoice) {
+        return res.status(404).json({ message: "Invoice not found" });
+      }
+
+      res.json(updatedInvoice);
+    } catch (error) {
+      console.error("Error updating purchase invoice status:", error);
+      res.status(500).json({ message: "Failed to update invoice status" });
+    }
+  });
+
   app.get("/api/rfps", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
@@ -1817,263 +1016,6 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/rfp/chat/:id", async (req: any, res) => {
-    try {
-      const rfpId = req.params.id;
-      const requestedEmail = typeof req.query.email === "string" ? req.query.email.toLowerCase() : undefined;
-      const rfp = await storage.getRfp(rfpId);
-      if (!rfp) {
-        return res.status(404).json({ message: "RFP not found" });
-      }
-
-      const viewer = await resolveRfpChatViewer(req, rfp);
-      if (viewer.type === "anonymous") {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-
-      if (viewer.type === "vendor" && requestedEmail && requestedEmail !== viewer.email) {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-
-      const targetEmail = viewer.type === "vendor" ? viewer.email : requestedEmail;
-      let vendorRecord =
-        targetEmail ? await storage.getVendorByEmail(targetEmail) : null;
-      if (vendorRecord && vendorRecord.workspaceId !== rfp.workspaceId) {
-        vendorRecord = null;
-      }
-
-      const proposals = targetEmail
-        ? await storage.getProposalsByRfpAndEmail(rfpId, targetEmail)
-        : await storage.getProposalsByRfp(rfpId);
-
-      if (viewer.type === "vendor" && proposals.length === 0) {
-        return res.status(403).json({ message: "No proposal found for this email" });
-      }
-
-      const teamMembersRaw = await storage.getUsersByWorkspace(rfp.workspaceId);
-      const teamMembers = teamMembersRaw.map((member) => ({
-        id: member.id,
-        firstName: member.firstName,
-        lastName: member.lastName,
-        email: member.email,
-        profileImageUrl: member.profileImageUrl,
-        role: member.role,
-      }));
-
-      const proposalIdsForViewer =
-        targetEmail ? proposals.map((proposal) => proposal.id).filter(Boolean) : null;
-
-      const communications = await storage.getVendorCommunications({
-        workspaceId: rfp.workspaceId,
-        rfpId,
-        vendorId: vendorRecord?.id || undefined,
-        proposalIds: !vendorRecord && proposalIdsForViewer && proposalIdsForViewer.length ? proposalIdsForViewer : undefined,
-      });
-
-      const serializedCommunications = communications.map((communication) => ({
-        ...communication,
-        createdAt: communication.createdAt ? new Date(communication.createdAt).toISOString() : communication.createdAt,
-        updatedAt: communication.updatedAt ? new Date(communication.updatedAt).toISOString() : communication.updatedAt,
-      }));
-
-      const normalizedProposals = proposals.map((proposal) => ({
-        id: proposal.id,
-        company: proposal.company,
-        status: proposal.status,
-        submittedAt: proposal.submittedAt ? new Date(proposal.submittedAt).toISOString() : proposal.submittedAt,
-      }));
-
-      const verifiedUser =
-        viewer.type === "vendor"
-          ? {
-              email: viewer.email,
-              proposals: proposals.map((proposal) => ({
-                id: proposal.id,
-                company: proposal.company,
-                firstName: proposal.firstName,
-                lastName: proposal.lastName,
-              })),
-            }
-          : viewer.type === "internal"
-          ? {
-              email: viewer.user.email,
-              proposals: proposals.map((proposal) => ({
-                id: proposal.id,
-                company: proposal.company,
-                firstName: proposal.firstName,
-                lastName: proposal.lastName,
-              })),
-            }
-          : undefined;
-
-      res.json({
-        rfp,
-        proposals: normalizedProposals,
-        verifiedUser,
-        teamMembers,
-        comments: [],
-        communications: serializedCommunications,
-        canModerate: viewer.type === "internal",
-      });
-    } catch (error) {
-      console.error("Error fetching RFP chat:", error);
-      res.status(500).json({ message: "Failed to fetch chat" });
-    }
-  });
-
-  app.post("/api/rfp/chat/:id/message", async (req: any, res) => {
-    try {
-      const rfpId = req.params.id;
-      const { content, parentId } = req.body || {};
-      if (!content || typeof content !== "string" || !content.trim()) {
-        return res.status(400).json({ message: "Content is required" });
-      }
-
-      const rfp = await storage.getRfp(rfpId);
-      if (!rfp) {
-        return res.status(404).json({ message: "RFP not found" });
-      }
-
-      const viewer = await resolveRfpChatViewer(req, rfp);
-      if (viewer.type === "anonymous") {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-
-      let authorId: string | null = null;
-      let authorName = "Guest";
-      let authorEmail: string | null = null;
-      let direction: "outbound" | "inbound" = "outbound";
-      let isVendorMessage = false;
-      let proposalId: string | null = null;
-      let vendorId: string | null = null;
-
-      if (viewer.type === "vendor") {
-        direction = "inbound";
-        isVendorMessage = true;
-        authorEmail = viewer.email;
-        authorName = viewer.email.split("@")[0] || viewer.email;
-        const vendorProposals = await storage.getProposalsByRfpAndEmail(rfpId, viewer.email);
-        if (vendorProposals.length === 0) {
-          return res.status(403).json({ message: "No proposal found for this email" });
-        }
-        proposalId = vendorProposals[0].id;
-        const vendorRecord = await storage.getVendorByEmail(viewer.email);
-        vendorId = vendorRecord && vendorRecord.workspaceId === rfp.workspaceId ? vendorRecord.id : null;
-      } else if (viewer.type === "internal") {
-        direction = "outbound";
-        isVendorMessage = false;
-        authorId = viewer.user.id;
-        authorEmail = viewer.user.email;
-        authorName =
-          `${viewer.user.firstName || ""} ${viewer.user.lastName || ""}`.trim() ||
-          viewer.user.email ||
-          "Workspace user";
-      }
-
-      const communication = await storage.createVendorCommunication({
-        vendorId,
-        rfpId: rfp.id,
-        proposalId,
-        workspaceId: rfp.workspaceId,
-        content: content.trim(),
-        authorId,
-        authorName,
-        authorEmail,
-        channel: "chat",
-        direction,
-        isVendorMessage,
-        parentCommunicationId: parentId || null,
-      });
-
-      await triggerChannelEvent(`presence-rfp-chat-${rfp.id}`, "new-message", communication);
-      res.json(communication);
-    } catch (error) {
-      console.error("Error sending RFP chat message:", error);
-      res.status(500).json({ message: "Failed to send message" });
-    }
-  });
-
-  app.delete("/api/rfp/chat/:rfpId/message/:messageId", async (req: any, res) => {
-    try {
-      const { rfpId, messageId } = req.params;
-      const rfp = await storage.getRfp(rfpId);
-      if (!rfp) {
-        return res.status(404).json({ message: "RFP not found" });
-      }
-
-      const viewer = await resolveRfpChatViewer(req, rfp);
-      if (viewer.type !== "internal") {
-        return res.status(403).json({ message: "Not authorized" });
-      }
-
-      const message = await storage.getVendorCommunication(messageId);
-      if (!message || message.rfpId !== rfpId) {
-        return res.status(404).json({ message: "Message not found" });
-      }
-
-      await storage.deleteVendorCommunication(messageId);
-      res.json({ deletedIds: [messageId] });
-    } catch (error) {
-      console.error("Error deleting RFP chat message:", error);
-      res.status(500).json({ message: "Failed to delete message" });
-    }
-  });
-
-  app.post("/api/rfp/chat/:id/typing", async (req: any, res) => {
-    try {
-      const rfpId = req.params.id;
-      const rfp = await storage.getRfp(rfpId);
-      if (!rfp) {
-        return res.status(404).json({ message: "RFP not found" });
-      }
-
-      const viewer = await resolveRfpChatViewer(req, rfp);
-      if (viewer.type === "anonymous") {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-
-      const providedName = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-      const displayName =
-        providedName ||
-        (viewer.type === "vendor"
-          ? viewer.email.split("@")[0] || viewer.email
-          : `${viewer.user.firstName || ""} ${viewer.user.lastName || ""}`.trim() ||
-            viewer.user.email ||
-            "Workspace user");
-
-      await triggerChannelEvent(`presence-rfp-chat-${rfpId}`, "typing", { name: displayName });
-      res.status(204).end();
-    } catch (error) {
-      console.error("Error broadcasting RFP typing event:", error);
-      res.status(500).json({ message: "Failed to broadcast typing event" });
-    }
-  });
-
-  app.post("/api/rfp/magic-link", async (req: any, res) => {
-    try {
-      const { email, rfpId } = req.body || {};
-      if (!email || !rfpId) {
-        return res.status(400).json({ message: "Email and rfpId are required" });
-      }
-
-      const rfp = await storage.getRfp(rfpId);
-      if (!rfp) {
-        return res.status(404).json({ message: "RFP not found" });
-      }
-
-      const token = createRfpMagicLinkToken(rfpId, email);
-      const protocol = req.protocol;
-      const host = req.get("host");
-      const chatLink = `${protocol}://${host}/chat/vendor?id=${rfpId}&email=${encodeURIComponent(email)}&token=${token}`;
-
-      await sendChatInvitation(email, chatLink, token, rfp.title);
-
-      res.json({ success: true });
-    } catch (error) {
-      console.error("Error sending RFP magic link:", error);
-      res.status(500).json({ message: "Failed to send magic link" });
-    }
-  });
 
   app.get("/api/proposals", isAuthenticated, async (req: any, res) => {
     try {
@@ -2166,139 +1108,6 @@ export async function registerRoutes(
       res.status(500).json({ message: "Failed to fetch proposal" });
     }
   });
-
-  app.get("/api/vendor-communications", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
-      if (!user?.workspaceId) {
-        return res.json([]);
-      }
-
-      const { vendorId, rfpId, email } = req.query as { vendorId?: string; rfpId?: string; email?: string };
-      const communications = await storage.getVendorCommunications({
-        workspaceId: user.workspaceId,
-        vendorId,
-        rfpId,
-        email,
-      });
-      res.json(communications);
-    } catch (error) {
-      console.error("Error fetching vendor communications:", error);
-      res.status(500).json({ message: "Failed to fetch communications" });
-    }
-  });
-
-  app.post("/api/vendor-communications/typing", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
-      if (!user?.workspaceId) {
-        return res.status(403).json({ message: "No workspace found" });
-      }
-
-      const { vendorId, rfpId, name } = req.body || {};
-      if (!vendorId || !rfpId) {
-        return res.status(400).json({ message: "vendorId and rfpId are required" });
-      }
-
-      const vendor = await storage.getVendor(vendorId);
-      if (!vendor || vendor.workspaceId !== user.workspaceId) {
-        return res.status(404).json({ message: "Vendor not found" });
-      }
-
-      const rfp = await storage.getRfp(rfpId);
-      if (!rfp || rfp.workspaceId !== user.workspaceId) {
-        return res.status(404).json({ message: "RFP not found" });
-      }
-
-      const displayName =
-        (typeof name === "string" && name.trim()) ||
-        `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
-        user.email ||
-        "Workspace user";
-
-      await triggerChannelEvent(
-        `presence-vendor-chat-${vendorId}-${rfpId}`,
-        "typing",
-        { name: displayName }
-      );
-
-      res.status(204).end();
-    } catch (error) {
-      console.error("Error broadcasting vendor typing event:", error);
-      res.status(500).json({ message: "Failed to broadcast typing event" });
-    }
-  });
-
-  app.post("/api/vendor-communications", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
-      if (!user?.workspaceId) {
-        return res.status(403).json({ message: "No workspace found" });
-      }
-
-      const { vendorId, rfpId, proposalId, content } = req.body || {};
-      if (!content || typeof content !== "string" || !content.trim()) {
-        return res.status(400).json({ message: "Content is required" });
-      }
-
-      let vendor = null;
-      if (vendorId) {
-        vendor = await storage.getVendor(vendorId);
-        if (!vendor || vendor.workspaceId !== user.workspaceId) {
-          return res.status(404).json({ message: "Vendor not found" });
-        }
-      }
-
-      let rfp = null;
-      if (rfpId) {
-        rfp = await storage.getRfp(rfpId);
-        if (!rfp || rfp.workspaceId !== user.workspaceId) {
-          return res.status(404).json({ message: "RFP not found" });
-        }
-      }
-
-      const authorName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Workspace user";
-
-      const communication = await storage.createVendorCommunication({
-        vendorId: vendor?.id || null,
-        rfpId: rfp?.id || null,
-        proposalId: proposalId || null,
-        workspaceId: user.workspaceId,
-        content: content.trim(),
-        authorId: userId,
-        authorName,
-        authorEmail: user.email,
-        channel: "chat",
-        direction: "outbound",
-        isVendorMessage: false,
-      });
-
-      if (communication.vendorId && communication.rfpId) {
-        await triggerChannelEvent(
-          `presence-vendor-chat-${communication.vendorId}-${communication.rfpId}`,
-          "new-message",
-          communication
-        );
-      }
-
-      if (communication.rfpId) {
-        await triggerChannelEvent(
-          `presence-rfp-chat-${communication.rfpId}`,
-          "new-message",
-          communication
-        );
-      }
-
-      res.json(communication);
-    } catch (error) {
-      console.error("Error creating vendor communication:", error);
-      res.status(500).json({ message: "Failed to send communication" });
-    }
-  });
-
   // Workspace
   app.get("/api/workspace", isAuthenticated, async (req: any, res) => {
     try {
@@ -2387,10 +1196,22 @@ export async function registerRoutes(
     const sig = req.headers['stripe-signature'] as string;
     const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
+    console.log('Webhook received:', {
+      hasSignature: !!sig,
+      bodyType: typeof req.body,
+      bodyIsBuffer: Buffer.isBuffer(req.body),
+      bodyLength: req.body?.length,
+      bodyPreview: req.body?.toString().substring(0, 100),
+      endpointSecret: !!endpointSecret,
+      headers: req.headers
+    });
+
     let event: Stripe.Event;
 
     try {
+      // Use req.body which should be raw buffer for webhook routes
       event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret!);
+      console.log('Webhook event constructed:', event.type);
     } catch (err) {
       console.log(`Webhook signature verification failed.`, err);
       return res.status(400).send('Webhook Error');
@@ -2461,24 +1282,28 @@ export async function registerRoutes(
 
         case 'payment_intent.succeeded': {
           const paymentIntent = event.data.object as any;
-          console.log('Payment succeeded:', paymentIntent.id);
+          console.log('Payment succeeded:', paymentIntent.id, 'Metadata:', paymentIntent.metadata);
 
           // Handle Stripe Connect payments
           if (paymentIntent.metadata?.invoiceId && paymentIntent.metadata?.workspaceId) {
             const invoiceId = paymentIntent.metadata.invoiceId;
             const workspaceId = paymentIntent.metadata.workspaceId;
 
+            console.log(`Processing payment for invoice ${invoiceId} in workspace ${workspaceId}`);
+
             try {
               // Update invoice status to paid
-              await storage.updateSalesInvoice(invoiceId, {
+              const updateResult = await storage.updateSalesInvoice(invoiceId, {
                 status: 'paid',
                 paidDate: new Date(),
               });
 
+              console.log(`Updated invoice ${invoiceId} status to paid:`, updateResult);
+
               // Create customer payment record
               const invoice = await storage.getSalesInvoice(invoiceId);
               if (invoice) {
-                await storage.createCustomerPayment({
+                const paymentRecord = await storage.createCustomerPayment({
                   workspaceId,
                   customerId: invoice.customerId,
                   invoiceId: invoiceId,
@@ -2489,12 +1314,19 @@ export async function registerRoutes(
                   externalTransactionId: paymentIntent.id,
                   createdById: null,
                 });
+                console.log(`Created payment record:`, paymentRecord);
               }
 
               console.log(`Successfully processed payment for invoice ${invoiceId}, workspace ${workspaceId}`);
             } catch (paymentError) {
               console.error('Error processing Stripe Connect payment:', paymentError);
             }
+          } else {
+            console.log('Payment intent missing required metadata:', {
+              hasInvoiceId: !!paymentIntent.metadata?.invoiceId,
+              hasWorkspaceId: !!paymentIntent.metadata?.workspaceId,
+              metadata: paymentIntent.metadata
+            });
           }
           break;
         }
@@ -2738,31 +1570,6 @@ export async function registerRoutes(
     }
   });
 
-  // Update client logo (for public chat)
-  app.patch("/api/chat/:slug/client-logo", async (req: any, res) => {
-    try {
-      const { slug } = req.params;
-      const { clientName, clientLogoUrl } = req.body;
-
-      if (!clientName || !clientLogoUrl) {
-        return res.status(400).json({ message: "Client name and logo URL required" });
-      }
-
-      // Find the issue by slug and get its workspace
-      const issue = await storage.getIssueBySlug(slug);
-      if (!issue) {
-        return res.status(404).json({ message: "Chat not found" });
-      }
-
-      // Store client logo URL in session/cookie for this chat
-      // In a real app, you might want to store this somewhere more persistent
-      res.json({ success: true, clientLogoUrl });
-    } catch (error) {
-      console.error("Error updating client logo:", error);
-      res.status(500).json({ message: "Failed to update client logo" });
-    }
-  });
-
   // ==================== STRIPE CONNECT ====================
 
   // Create Stripe Connect Account
@@ -2823,7 +1630,7 @@ export async function registerRoutes(
           timestamp: new Date().toISOString(),
           data: {
             account_id: account.id,
-            capabilities_requested: ['card_payments', 'transfers']
+            capabilities_requested: ['card_payments', 'transfers'],
           }
         }],
         stripeConnectLastWebhookEvent: 'account.created',
@@ -2936,8 +1743,8 @@ export async function registerRoutes(
             workspaceId: workspace.id,
           },
         },
-        success_url: `${process.env.APP_URL}/recievables/invoices/${invoice.id}?payment=success`,
-        cancel_url: `${process.env.APP_URL}/recievables/invoices/${invoice.id}?payment=cancelled`,
+        success_url: `${process.env.APP_URL}/receivables/invoices/${invoice.id}?payment=success`,
+        cancel_url: `${process.env.APP_URL}/receivables/invoices/${invoice.id}?payment=cancelled`,
         metadata: {
           invoiceId: invoice.id,
           workspaceId: workspace.id,
@@ -3047,7 +1854,7 @@ export async function registerRoutes(
   // ==================== ACCOUNTS RECEIVABLE ====================
 
   // AR Dashboard Statistics
-  app.get("/api/recievables/dashboard/stats", isAuthenticated, async (req: any, res) => {
+  app.get("/api/receivables/dashboard/stats", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
       const user = await storage.getUser(userId);
@@ -3132,7 +1939,7 @@ export async function registerRoutes(
   });
 
   // Customer Management
-  app.get("/api/recievables/customers", isAuthenticated, async (req: any, res) => {
+  app.get("/api/receivables/customers", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
       const user = await storage.getUser(userId);
@@ -3147,7 +1954,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/recievables/customers/:id", isAuthenticated, async (req: any, res) => {
+  app.get("/api/receivables/customers/:id", isAuthenticated, async (req: any, res) => {
     try {
       const customer = await storage.getCustomer(req.params.id);
       if (!customer) {
@@ -3160,7 +1967,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/recievables/customers", isAuthenticated, async (req: any, res) => {
+  app.post("/api/receivables/customers", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
       const user = await storage.getUser(userId);
@@ -3192,7 +1999,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/recievables/customers/:id", isAuthenticated, async (req: any, res) => {
+  app.patch("/api/receivables/customers/:id", isAuthenticated, async (req: any, res) => {
     try {
       const customer = await storage.updateCustomer(req.params.id, req.body);
       if (!customer) {
@@ -3205,7 +2012,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/recievables/customers/:id", isAuthenticated, async (req: any, res) => {
+  app.delete("/api/receivables/customers/:id", isAuthenticated, async (req: any, res) => {
     try {
       await storage.deleteCustomer(req.params.id);
       res.json({ success: true });
@@ -3215,22 +2022,8 @@ export async function registerRoutes(
     }
   });
 
-  // Convert Issue to Customer
-  app.post("/api/recievables/issues/:issueId/convert-to-customer", isAuthenticated, async (req: any, res) => {
-    try {
-      const customer = await storage.convertIssueToCustomer(req.params.issueId);
-      if (!customer) {
-        return res.status(400).json({ message: "Failed to convert issue to customer" });
-      }
-      res.json(customer);
-    } catch (error) {
-      console.error("Error converting issue to customer:", error);
-      res.status(500).json({ message: "Failed to convert issue to customer" });
-    }
-  });
-
   // Sales Invoice Management
-  app.get("/api/recievables/invoices", isAuthenticated, async (req: any, res) => {
+  app.get("/api/receivables/invoices", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
       const user = await storage.getUser(userId);
@@ -3245,7 +2038,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/recievables/invoices/:id", isAuthenticated, async (req: any, res) => {
+  app.get("/api/receivables/invoices/:id", isAuthenticated, async (req: any, res) => {
     try {
       const invoice = await storage.getSalesInvoiceWithDetails(req.params.id);
       if (!invoice) {
@@ -3308,7 +2101,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/recievables/invoices", isAuthenticated, async (req: any, res) => {
+  app.post("/api/receivables/invoices", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
       const user = await storage.getUser(userId);
@@ -3401,7 +2194,7 @@ export async function registerRoutes(
   });
 
   // Publish/Send Invoice
-  app.post("/api/recievables/invoices/:id/publish", isAuthenticated, async (req: any, res) => {
+  app.post("/api/receivables/invoices/:id/publish", isAuthenticated, async (req: any, res) => {
     try {
       const invoice = await storage.getSalesInvoiceWithDetails(req.params.id);
       if (!invoice) {
@@ -3423,7 +2216,7 @@ export async function registerRoutes(
         try {
           const protocol = req.protocol;
           const host = req.get("host");
-          const invoiceUrl = `${protocol}://${host}/recievables/invoices/${invoice.id}`;
+          const invoiceUrl = `${protocol}://${host}/receivables/invoices/${invoice.id}`;
           
           console.log(`Sending invoice email to ${invoice.customer.email} for invoice ${invoice.invoiceNumber}`);
           
@@ -3454,7 +2247,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/recievables/invoices/:id", isAuthenticated, async (req: any, res) => {
+  app.patch("/api/receivables/invoices/:id", isAuthenticated, async (req: any, res) => {
     try {
       const { lineItems, taxPercentage, ...updateData } = req.body;
       
@@ -3512,7 +2305,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/recievables/invoices/:id", isAuthenticated, async (req: any, res) => {
+  app.delete("/api/receivables/invoices/:id", isAuthenticated, async (req: any, res) => {
     try {
       await storage.deleteSalesInvoice(req.params.id);
       res.json({ success: true });
@@ -3522,12 +2315,12 @@ export async function registerRoutes(
     }
   });
   // PDF generation removed - now using hosted pages approach
-  // Users can view invoices at /recievables/invoices/:id and download as PDF using browser print function
+  // Users can view invoices at /receivables/invoices/:id and download as PDF using browser print function
 
 
 
   // Recurring Invoice Management
-  app.get("/api/recievables/recurring-invoices", isAuthenticated, async (req: any, res) => {
+  app.get("/api/receivables/recurring-invoices", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
       const user = await storage.getUser(userId);
@@ -3542,7 +2335,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/recievables/recurring-invoices", isAuthenticated, async (req: any, res) => {
+  app.post("/api/receivables/recurring-invoices", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
       const user = await storage.getUser(userId);
@@ -3563,7 +2356,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/recievables/recurring-invoices/:id", isAuthenticated, async (req: any, res) => {
+  app.patch("/api/receivables/recurring-invoices/:id", isAuthenticated, async (req: any, res) => {
     try {
       const recurringInvoice = await storage.updateRecurringInvoice(req.params.id, req.body);
       if (!recurringInvoice) {
@@ -3577,7 +2370,7 @@ export async function registerRoutes(
   });
 
   // Customer Payment Management
-  app.get("/api/recievables/payments", isAuthenticated, async (req: any, res) => {
+  app.get("/api/receivables/payments", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
       const user = await storage.getUser(userId);
@@ -3592,7 +2385,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/recievables/payments", isAuthenticated, async (req: any, res) => {
+  app.post("/api/receivables/payments", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
       const user = await storage.getUser(userId);
@@ -3628,7 +2421,7 @@ export async function registerRoutes(
   });
 
   // Payment Method Management
-  app.get("/api/recievables/payment-methods/:customerId", isAuthenticated, async (req: any, res) => {
+  app.get("/api/receivables/payment-methods/:customerId", isAuthenticated, async (req: any, res) => {
     try {
       const paymentMethods = await storage.getPaymentMethodsByCustomer(req.params.customerId);
       res.json(paymentMethods);
@@ -3638,7 +2431,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/recievables/payment-methods", isAuthenticated, async (req: any, res) => {
+  app.post("/api/receivables/payment-methods", isAuthenticated, async (req: any, res) => {
     try {
       const paymentMethod = await storage.createPaymentMethod(req.body);
       res.json(paymentMethod);
@@ -3648,7 +2441,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/recievables/payment-methods/:id", isAuthenticated, async (req: any, res) => {
+  app.patch("/api/receivables/payment-methods/:id", isAuthenticated, async (req: any, res) => {
     try {
       const paymentMethod = await storage.updatePaymentMethod(req.params.id, req.body);
       if (!paymentMethod) {
@@ -3662,7 +2455,7 @@ export async function registerRoutes(
   });
 
   // AR Reports and Analytics
-  app.get("/api/recievables/reports/aging", isAuthenticated, async (req: any, res) => {
+  app.get("/api/receivables/reports/aging", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
       const user = await storage.getUser(userId);
@@ -3705,7 +2498,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/recievables/reports/collection-insights", isAuthenticated, async (req: any, res) => {
+  app.get("/api/receivables/reports/collection-insights", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
       const user = await storage.getUser(userId);
@@ -4062,6 +2855,18 @@ export async function registerRoutes(
       const workspace = await storage.getWorkspace(invoice.workspaceId);
       if (!workspace?.stripeConnectAccountId) {
         return res.status(400).json({ message: "Workspace does not have Stripe Connect enabled" });
+      }
+
+      // Check Stripe Connect account status
+      const account = await stripe.accounts.retrieve(workspace.stripeConnectAccountId);
+      if (!account.charges_enabled) {
+        return res.status(400).json({ message: "Stripe Connect account is not enabled for charges. Please complete account onboarding." });
+      }
+      if (!account.payouts_enabled) {
+        return res.status(400).json({ message: "Stripe Connect account is not enabled for payouts. Please complete account onboarding." });
+      }
+      if (!account.details_submitted) {
+        return res.status(400).json({ message: "Stripe Connect account details are not submitted. Please complete account onboarding." });
       }
 
       // Get customer and ensure they have a Stripe customer ID

@@ -14,25 +14,20 @@ import Onboarding from "@/pages/onboarding";
 import Dashboard from "@/pages/dashboard";
 import Team from "@/pages/team";
 import Settings from "@/pages/settings";
-import IssuesList from "@/pages/issues-list";
-import IssueDetail from "@/pages/issue-detail";
-import IssueNew from "@/pages/issue-new";
-import IssueEdit from "@/pages/issue-edit";
-import TeamChat from "@/pages/team-chat";
-import CustomerChatPage from "@/pages/chat-customer";
 import TrialExpired from "@/pages/trial-expired";
 import AccountsPayable from "@/pages/payables";
-import AccountsReceivable from "@/pages/recievables";
+import AccountsReceivable from "@/pages/receivables";
 import VendorsPage from "@/pages/vendors";
 import { InvoiceView } from "@/pages/invoice-view";
 import { Skeleton } from "@/components/ui/skeleton";
 import { isTrialExpired } from "@shared/trial";
 import type { Workspace } from "@shared/schema";
-import VendorChatPage from "@/pages/chat-vendor";
-import ProposalView from "@/pages/proposal-view";
-import RfpView from "@/pages/rfp-view";
+import ProposalView from "@/pages/proposal";
+import RfpView from "@/pages/rfp";
 import VendorProfile from "@/pages/vendor-profile";
 import VendorInvoiceSubmission from "@/pages/vendor-invoice";
+import FeedPage from "@/pages/feed";
+import RfpPublishPage from "@/pages/rfp-publish";
 
 function LoadingScreen() {
   return (
@@ -79,8 +74,6 @@ function Router() {
   // Public routes that don't require authentication
   const publicRoutes = (
     <Switch>
-      <Route path="/chat/customer" component={CustomerChatPage} />
-      <Route path="/chat/vendor" component={VendorChatPage} />
       <Route path="/vendor/invoice" component={VendorInvoiceSubmission} />
       <Route path="/" component={Landing} />
       <Route component={Landing} />
@@ -101,8 +94,6 @@ function Router() {
   if (!user?.onboardingCompleted) {
     return (
       <Switch>
-        <Route path="/chat/customer" component={CustomerChatPage} />
-        <Route path="/chat/vendor" component={VendorChatPage} />
         <Route component={() => <Onboarding isNewWorkspace={!user?.workspaceId} />} />
       </Switch>
     );
@@ -116,10 +107,9 @@ function Router() {
   // Fully authenticated with completed onboarding and valid trial
   return (
     <Switch>
-      <Route path="/chat/customer" component={CustomerChatPage} />
-      <Route path="/chat/vendor" component={VendorChatPage} />
-      <Route path="/rfp-view/:id" component={RfpView} />
-      <Route path="/proposal-view/:id" component={ProposalView} />
+      <Route path="/rfp-publish" component={RfpPublishPage} />
+      <Route path="/rfp/:id" component={RfpView} />
+      <Route path="/proposal/:id" component={ProposalView} />
       <Route path="/vendor-profile" component={VendorProfile} />
       <Route path="/vendor/invoice" component={VendorInvoiceSubmission} />
       <Route path="/">
@@ -127,42 +117,22 @@ function Router() {
           <Dashboard />
         </AuthenticatedLayout>
       </Route>
-      <Route path="/issues">
+      {/* <Route path="/feed">
         <AuthenticatedLayout>
-          <IssuesList />
+          <FeedPage />
         </AuthenticatedLayout>
-      </Route>
-      <Route path="/issues/new">
-        <AuthenticatedLayout>
-          <IssueNew />
-        </AuthenticatedLayout>
-      </Route>
-      <Route path="/issues/:id/team-chat">
-        <AuthenticatedLayout>
-          <TeamChat />
-        </AuthenticatedLayout>
-      </Route>
-      <Route path="/issues/:id/edit">
-        <AuthenticatedLayout>
-          <IssueEdit />
-        </AuthenticatedLayout>
-      </Route>
-      <Route path="/issues/:id">
-        <AuthenticatedLayout>
-          <IssueDetail />
-        </AuthenticatedLayout>
-      </Route>
+      </Route> */}
       <Route path="/payables">
         <AuthenticatedLayout>
           <AccountsPayable />
         </AuthenticatedLayout>
       </Route>
-      <Route path="/recievables">
+      <Route path="/receivables">
         <AuthenticatedLayout>
           <AccountsReceivable />
         </AuthenticatedLayout>
       </Route>
-      <Route path="/reciecables/invoices/:id" component={InvoiceView} />
+      <Route path="/receivables/invoices/:id" component={InvoiceView} />
       <Route path="/vendors">
         <AuthenticatedLayout>
           <VendorsPage />

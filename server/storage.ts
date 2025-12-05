@@ -36,7 +36,7 @@ import {
   rfps,
   proposals,
   proposalIssues,
-  vendorCommunications,
+  // Slack Connect entities
   type User,
   type UpsertUser,
   type Workspace,
@@ -57,6 +57,8 @@ import {
   type InsertActivity,
   type IssueAssignee,
   type InsertIssueAssignee,
+  type ConversationMessage,
+  type InsertConversationMessage,
   type IssueWithDetails,
   type CommentWithAuthor,
   // New types
@@ -100,9 +102,12 @@ import {
   type InsertProposal,
   type ProposalIssue,
   type InsertProposalIssue,
-  type VendorCommunication,
-  type InsertVendorCommunication,
 } from "../shared/schema";
+
+// Extended types for proposals with workspace information
+export type ProposalWithWorkspace = Proposal & {
+  rfpWorkspaceId: string;
+};
 import { db } from "./db";
 import { eq, desc, and, sql, count as countFn, inArray } from "drizzle-orm";
 
@@ -123,6 +128,7 @@ export interface IStorage {
   // Issue operations
   getIssue(id: string): Promise<Issue | undefined>;
   getIssueWithDetails(id: string): Promise<IssueWithDetails | undefined>;
+  getIssueByRfpAndContact(workspaceId: string, rfpId: string, contactEmail: string): Promise<IssueWithDetails | undefined>;
   getIssuesByWorkspace(workspaceId: string, status?: string): Promise<IssueWithDetails[]>;
   getIssueBySlug(slug: string): Promise<Issue | undefined>;
   createIssue(issue: InsertIssue): Promise<Issue>;
@@ -269,18 +275,13 @@ export interface IStorage {
   getProposalsByRfp(rfpId: string): Promise<Proposal[]>;
   createProposal(proposal: InsertProposal): Promise<Proposal>;
   getProposalsByRfpAndEmail(rfpId: string, email: string): Promise<Proposal[]>;
-  getProposalsByWorkspace(workspaceId: string): Promise<Proposal[]>;
+  getProposalsByWorkspace(workspaceId: string): Promise<ProposalWithWorkspace[]>;
   getProposalWithRfp(proposalId: string): Promise<(Proposal & { rfp: Rfp }) | undefined>;
 
   // Proposal Issue operations
   createProposalIssue(proposalIssue: InsertProposalIssue): Promise<ProposalIssue>;
   getProposalIssuesByProposals(proposalIds: string[]): Promise<ProposalIssue[]>;
 
-  // Vendor communications
-  createVendorCommunication(entry: InsertVendorCommunication): Promise<VendorCommunication>;
-  getVendorCommunications(filters: { workspaceId?: string; vendorId?: string; rfpId?: string; proposalIds?: string[]; email?: string }): Promise<VendorCommunication[]>;
-  getVendorCommunication(id: string): Promise<VendorCommunication | undefined>;
-  deleteVendorCommunication(id: string): Promise<void>;
 
   // ==================== MERCURY INTEGRATION ====================
   // TODO: Implement when Mercury integration is ready
@@ -288,6 +289,8 @@ export interface IStorage {
   // updateMercurySyncStatus(entityId: string, status: string, error?: string): Promise<void>;
   // getMercurySyncLogs(workspaceId: string): Promise<MercurySyncLog[]>;
 
+
+  // ==================== SLACK CONNECT INTEGRATION ====================
 
 }
 
@@ -386,6 +389,11 @@ export class DatabaseStorage implements IStorage {
   async getIssueWithDetails(id: string): Promise<IssueWithDetails | undefined> {
     const [issue] = await db.select().from(issues).where(eq(issues.id, id));
     if (!issue) return undefined;
+    const linkedRfp = await this.getIssueLinkedRfpId(id);
+    const issueWithRfpId = {
+      ...issue,
+      rfpId: issue.rfpId || linkedRfp,
+    };
 
     const assigneeRows = await db
       .select({ user: users })
@@ -406,12 +414,23 @@ export class DatabaseStorage implements IStorage {
       .where(eq(comments.issueId, id));
 
     return {
-      ...issue,
+      ...issueWithRfpId,
       assignees: assigneeRows.map((r) => r.user),
       createdBy: createdByUser,
       comments: commentsWithAuthors,
       commentCount: commentCount?.count || 0,
     };
+  }
+
+  async getIssueLinkedRfpId(issueId: string): Promise<string | null> {
+    const rows = await db
+      .select({ rfpId: proposals.rfpId })
+      .from(proposalIssues)
+      .innerJoin(proposals, eq(proposals.id, proposalIssues.proposalId))
+      .where(eq(proposalIssues.issueId, issueId))
+      .orderBy(desc(proposalIssues.createdAt))
+      .limit(1);
+    return rows[0]?.rfpId || null;
   }
 
   async getIssuesByWorkspace(workspaceId: string, status?: string): Promise<IssueWithDetails[]> {
@@ -439,8 +458,10 @@ export class DatabaseStorage implements IStorage {
         .from(comments)
         .where(eq(comments.issueId, issue.id));
 
+      const linkedRfp = await this.getIssueLinkedRfpId(issue.id);
       results.push({
         ...issue,
+        rfpId: issue.rfpId || linkedRfp,
         assignees: assigneeRows.map((r) => r.user),
         createdBy: createdByUser,
         commentCount: commentCount?.count || 0,
@@ -453,6 +474,21 @@ export class DatabaseStorage implements IStorage {
   async getIssueBySlug(slug: string): Promise<Issue | undefined> {
     const [issue] = await db.select().from(issues).where(eq(issues.publishedSlug, slug));
     return issue;
+  }
+
+  async getIssueByRfpAndContact(workspaceId: string, rfpId: string, contactEmail: string): Promise<IssueWithDetails | undefined> {
+    if (!contactEmail) return undefined;
+    const normalizedEmail = contactEmail.toLowerCase();
+    const candidates = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.workspaceId, workspaceId), eq(issues.rfpId, rfpId)));
+
+    const matched = candidates.find(
+      (issue) => (issue.contactEmail || "").toLowerCase() === normalizedEmail,
+    );
+    if (!matched) return undefined;
+    return await this.getIssueWithDetails(matched.id);
   }
 
   async createIssue(issue: InsertIssue): Promise<Issue> {
@@ -982,6 +1018,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteSalesInvoice(id: string): Promise<void> {
+    // First delete related customer payments
+    await db.delete(customerPayments).where(eq(customerPayments.invoiceId, id));
+    // Then delete the invoice
     await db.delete(salesInvoices).where(eq(salesInvoices.id, id));
   }
 
@@ -1227,7 +1266,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createProposal(proposal: InsertProposal): Promise<Proposal> {
-    const [created] = await db.insert(proposals).values(proposal).returning();
+    const [created] = await db.insert(proposals).values(proposal as any).returning();
     return created;
   }
 
@@ -1239,13 +1278,18 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(proposals.submittedAt));
   }
 
-  async getProposalsByWorkspace(workspaceId: string): Promise<Proposal[]> {
-    return await db
-      .select({ ...proposals, rfpWorkspaceId: rfps.workspaceId })
+  async getProposalsByWorkspace(workspaceId: string): Promise<ProposalWithWorkspace[]> {
+    const result = await db
+      .select()
       .from(proposals)
       .innerJoin(rfps, eq(rfps.id, proposals.rfpId))
       .where(eq(rfps.workspaceId, workspaceId))
       .orderBy(desc(proposals.submittedAt));
+
+    return result.map(row => ({
+      ...row.proposals,
+      rfpWorkspaceId: row.rfps.workspaceId
+    })) as ProposalWithWorkspace[];
   }
 
   async getProposalWithRfp(proposalId: string): Promise<(Proposal & { rfp: Rfp }) | undefined> {
@@ -1278,37 +1322,6 @@ export class DatabaseStorage implements IStorage {
       .orderBy(proposalIssues.createdAt);
   }
 
-  // Vendor communications
-  async createVendorCommunication(entry: InsertVendorCommunication): Promise<VendorCommunication> {
-    const [created] = await db.insert(vendorCommunications).values(entry).returning();
-    return created;
-  }
-
-  async getVendorCommunications(filters: { workspaceId?: string; vendorId?: string; rfpId?: string; proposalIds?: string[]; email?: string }): Promise<VendorCommunication[]> {
-    let query = db.select().from(vendorCommunications);
-    const conditions = [];
-
-    if (filters.workspaceId) conditions.push(eq(vendorCommunications.workspaceId, filters.workspaceId));
-    if (filters.vendorId) conditions.push(eq(vendorCommunications.vendorId, filters.vendorId));
-    if (filters.rfpId) conditions.push(eq(vendorCommunications.rfpId, filters.rfpId));
-    if (filters.email) conditions.push(eq(vendorCommunications.authorEmail, filters.email));
-    if (filters.proposalIds?.length) conditions.push(inArray(vendorCommunications.proposalId, filters.proposalIds));
-
-    if (conditions.length) {
-      query = query.where(and(...conditions));
-    }
-
-    return await query.orderBy(desc(vendorCommunications.createdAt));
-  }
-
-  async getVendorCommunication(id: string): Promise<VendorCommunication | undefined> {
-    const [record] = await db.select().from(vendorCommunications).where(eq(vendorCommunications.id, id));
-    return record;
-  }
-
-  async deleteVendorCommunication(id: string): Promise<void> {
-    await db.delete(vendorCommunications).where(eq(vendorCommunications.id, id));
-  }
 
   // ==================== MERCURY INTEGRATION ====================
   
@@ -1331,6 +1344,7 @@ export class DatabaseStorage implements IStorage {
   //     .where(eq(mercurySyncLogs.workspaceId, workspaceId))
   //     .orderBy(desc(mercurySyncLogs.createdAt));
   // }
+
 }
 
 export const storage = new DatabaseStorage();

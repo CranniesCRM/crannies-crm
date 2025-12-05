@@ -111,7 +111,7 @@ export default function Dashboard() {
     queryKey: ["/api/payables/purchase-invoices"],
   });
   const { data: arStats, isLoading: arLoading } = useQuery<ArStats>({
-    queryKey: ["/api/recievables/dashboard/stats"],
+    queryKey: ["/api/receivables/dashboard/stats"],
   });
 
   const apStats = apData?.stats;

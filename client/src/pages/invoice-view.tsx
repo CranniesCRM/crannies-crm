@@ -63,21 +63,9 @@ export function InvoiceView() {
   const [invoice, setInvoice] = useState<Invoice | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [paymentMethod, setPaymentMethod] = useState<'elements'>('elements');
-  const [clientSecret, setClientSecret] = useState<string | null>(null);
-  const [paymentIntentId, setPaymentIntentId] = useState<string | null>(null);
-  
-  // Payment form state
-  const [cardNumber, setCardNumber] = useState('');
-  const [expiryDate, setExpiryDate] = useState('');
-  const [cvc, setCvc] = useState('');
-  const [cardholderName, setCardholderName] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [formErrors, setFormErrors] = useState<{[key: string]: string}>({});
   const { toast } = useToast();
   const createPaymentSession = useCreatePaymentSession();
   const createStripeInvoice = useCreateAndSendStripeInvoice();
-  const createPaymentIntent = useCreatePaymentIntent();
   const { data: stripeConnectAccount } = useStripeConnectAccount();
   const stripeInvoiceData = useCanUseStripeInvoicing(id || '');
 
@@ -88,7 +76,7 @@ export function InvoiceView() {
   const fetchInvoice = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`/api/recievables/invoices/${id}`);
+      const response = await fetch(`/api/receivables/invoices/${id}`);
       
       if (!response.ok) {
         throw new Error('Failed to fetch invoice');
@@ -112,14 +100,16 @@ export function InvoiceView() {
     if (!invoice) return;
 
     try {
-      // For Elements, we create a Payment Intent and let the Elements component handle the payment
-      const result = await createPaymentIntent.mutateAsync({ invoiceId: invoice.id });
-      if (result.clientSecret) {
-        setClientSecret(result.clientSecret);
-        setPaymentIntentId(result.paymentIntentId);
+      // Create a Stripe Checkout session for secure payment processing
+      const result = await createPaymentSession.mutateAsync({ invoiceId: invoice.id });
+      if (result.sessionId && result.url) {
+        // Redirect to Stripe Checkout
+        window.location.href = result.url;
+      } else {
         toast({
-          title: "Payment Form Ready",
-          description: "Payment form has been prepared. Please enter your payment details below.",
+          title: "Payment Error",
+          description: "Failed to create payment session. Please try again.",
+          variant: "destructive",
         });
       }
     } catch (error) {
@@ -132,137 +122,6 @@ export function InvoiceView() {
     }
   };
 
-  // Validation functions
-  const validateCardNumber = (cardNumber: string): boolean => {
-    // Remove spaces and check if it's 16 digits
-    const cleaned = cardNumber.replace(/\s/g, '');
-    return /^\d{16}$/.test(cleaned);
-  };
-
-  const validateExpiryDate = (expiry: string): boolean => {
-    // Check MM/YY format and ensure it's not past
-    const match = expiry.match(/^(\d{2})\/(\d{2})$/);
-    if (!match) return false;
-    
-    const month = parseInt(match[1]);
-    const year = parseInt('20' + match[2]);
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth() + 1;
-    
-    if (month < 1 || month > 12) return false;
-    if (year < currentYear || (year === currentYear && month < currentMonth)) return false;
-    
-    return true;
-  };
-
-  const validateCVC = (cvc: string): boolean => {
-    // Check if it's 3 or 4 digits
-    return /^\d{3,4}$/.test(cvc);
-  };
-
-  const validateCardholderName = (name: string): boolean => {
-    // Check if name has at least 2 words and contains letters
-    const words = name.trim().split(/\s+/);
-    return words.length >= 2 && words.every(word => /^[a-zA-Z]+$/.test(word));
-  };
-
-  const validateForm = (): boolean => {
-    const errors: {[key: string]: string} = {};
-
-    if (!cardNumber.trim()) {
-      errors.cardNumber = 'Card number is required';
-    } else if (!validateCardNumber(cardNumber)) {
-      errors.cardNumber = 'Please enter a valid 16-digit card number';
-    }
-
-    if (!expiryDate.trim()) {
-      errors.expiryDate = 'Expiry date is required';
-    } else if (!validateExpiryDate(expiryDate)) {
-      errors.expiryDate = 'Please enter a valid expiry date (MM/YY)';
-    }
-
-    if (!cvc.trim()) {
-      errors.cvc = 'CVC is required';
-    } else if (!validateCVC(cvc)) {
-      errors.cvc = 'Please enter a valid CVC (3-4 digits)';
-    }
-
-    if (!cardholderName.trim()) {
-      errors.cardholderName = 'Cardholder name is required';
-    } else if (!validateCardholderName(cardholderName)) {
-      errors.cardholderName = 'Please enter a valid cardholder name';
-    }
-
-    setFormErrors(errors);
-    return Object.keys(errors).length === 0;
-  };
-
-  const formatCardNumber = (value: string): string => {
-    // Remove all non-numeric characters
-    const cleaned = value.replace(/\D/g, '');
-    // Add spaces every 4 digits
-    return cleaned.replace(/(\d{4})(?=\d)/g, '$1 ').trim();
-  };
-
-  const formatExpiryDate = (value: string): string => {
-    // Remove all non-numeric characters
-    const cleaned = value.replace(/\D/g, '');
-    // Add slash after MM
-    if (cleaned.length >= 2) {
-      return cleaned.substring(0, 2) + '/' + cleaned.substring(2, 4);
-    }
-    return cleaned;
-  };
-
-  const handlePaymentSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    
-    if (!clientSecret || !paymentIntentId) return;
-
-    // Validate form
-    if (!validateForm()) {
-      toast({
-        title: "Validation Error",
-        description: "Please correct the errors in the form before submitting.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setIsProcessing(true);
-
-    try {
-      // In a real implementation, you would use Stripe Elements to confirm the payment
-      // For now, we'll simulate the payment process
-      await new Promise(resolve => setTimeout(resolve, 2000)); // Simulate processing time
-      
-      toast({
-        title: "Payment Successful",
-        description: `Payment of ${invoice ? formatCurrency(invoice.totalAmount, invoice.currency) : ''} has been processed successfully.`,
-      });
-      
-      // Reset the payment form
-      setClientSecret(null);
-      setPaymentIntentId(null);
-      setCardNumber('');
-      setExpiryDate('');
-      setCvc('');
-      setCardholderName('');
-      setFormErrors({});
-      
-      // Refresh the invoice to check if payment was successful
-      fetchInvoice();
-    } catch (error) {
-      toast({
-        title: "Payment Failed",
-        description: "There was an error processing your payment. Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsProcessing(false);
-    }
-  };
 
   const handleSendStripeInvoice = async () => {
     if (!invoice) return;
@@ -608,177 +467,31 @@ export function InvoiceView() {
                     <p className="text-gray-600 mb-4">
                       Enter your payment details directly in the form below to pay this invoice securely.
                     </p>
-                    <Button 
+                    <Button
                       onClick={handlePayInvoice}
-                      disabled={createPaymentIntent.isPending}
+                      disabled={createPaymentSession.isPending}
                       className="bg-green-600 hover:bg-green-700"
                     >
-                      {createPaymentIntent.isPending ? (
+                      {createPaymentSession.isPending ? (
                         <>
                           <CreditCard className="w-4 h-4 mr-2 animate-pulse" />
-                          Processing...
+                          Creating Payment Session...
                         </>
                       ) : (
                         <>
                           <CreditCard className="w-4 h-4 mr-2" />
-                          Prepare Payment Form
+                          Pay with Stripe Checkout
                         </>
                       )}
                     </Button>
                     <div className="text-sm text-gray-500 space-y-1">
                       <>
-                        <p>💳 Secured by Stripe Elements</p>
-                        <p>🔒 Your payment information is encrypted</p>
+                        <p>💳 Secure payment processing powered by Stripe</p>
+                        <p>🔒 Your payment information is encrypted and secure</p>
                         <p>⚡ Instant payment confirmation</p>
-                        <p>🎨 Fully customizable payment form</p>
+                        <p>🎨 Hosted checkout experience</p>
                       </>
                     </div>
-                    
-                    {/* Payment Form - Shows when clientSecret is available */}
-                    {clientSecret && (
-                      <div className="mt-6 p-4 border border-gray-200 rounded-lg bg-white">
-                        <h4 className="font-medium text-gray-900 mb-3">Enter Payment Details</h4>
-                        <form onSubmit={handlePaymentSubmit}>
-                          <div className="space-y-4">
-                            <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-1">
-                                Card Number
-                              </label>
-                              <input
-                                type="text"
-                                placeholder="1234 5678 9012 3456"
-                                value={cardNumber}
-                                onChange={(e) => {
-                                  const formatted = formatCardNumber(e.target.value);
-                                  if (formatted.replace(/\s/g, '').length <= 16) {
-                                    setCardNumber(formatted);
-                                    if (formErrors.cardNumber) {
-                                      setFormErrors(prev => ({ ...prev, cardNumber: '' }));
-                                    }
-                                  }
-                                }}
-                                className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                  formErrors.cardNumber ? 'border-red-500' : 'border-gray-300'
-                                }`}
-                                maxLength={19}
-                              />
-                              {formErrors.cardNumber && (
-                                <p className="text-red-500 text-xs mt-1">{formErrors.cardNumber}</p>
-                              )}
-                            </div>
-                            <div className="grid grid-cols-2 gap-4">
-                              <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-1">
-                                  Expiry Date
-                                </label>
-                                <input
-                                  type="text"
-                                  placeholder="MM/YY"
-                                  value={expiryDate}
-                                  onChange={(e) => {
-                                    const formatted = formatExpiryDate(e.target.value);
-                                    if (formatted.replace(/\D/g, '').length <= 4) {
-                                      setExpiryDate(formatted);
-                                      if (formErrors.expiryDate) {
-                                        setFormErrors(prev => ({ ...prev, expiryDate: '' }));
-                                      }
-                                    }
-                                  }}
-                                  className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                    formErrors.expiryDate ? 'border-red-500' : 'border-gray-300'
-                                  }`}
-                                  maxLength={5}
-                                />
-                                {formErrors.expiryDate && (
-                                  <p className="text-red-500 text-xs mt-1">{formErrors.expiryDate}</p>
-                                )}
-                              </div>
-                              <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-1">
-                                  CVC
-                                </label>
-                                <input
-                                  type="text"
-                                  placeholder="123"
-                                  value={cvc}
-                                  onChange={(e) => {
-                                    const value = e.target.value.replace(/\D/g, '');
-                                    if (value.length <= 4) {
-                                      setCvc(value);
-                                      if (formErrors.cvc) {
-                                        setFormErrors(prev => ({ ...prev, cvc: '' }));
-                                      }
-                                    }
-                                  }}
-                                  className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                    formErrors.cvc ? 'border-red-500' : 'border-gray-300'
-                                  }`}
-                                  maxLength={4}
-                                />
-                                {formErrors.cvc && (
-                                  <p className="text-red-500 text-xs mt-1">{formErrors.cvc}</p>
-                                )}
-                              </div>
-                            </div>
-                            <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-1">
-                                Cardholder Name
-                              </label>
-                              <input
-                                type="text"
-                                placeholder="John Doe"
-                                value={cardholderName}
-                                onChange={(e) => {
-                                  setCardholderName(e.target.value);
-                                  if (formErrors.cardholderName) {
-                                    setFormErrors(prev => ({ ...prev, cardholderName: '' }));
-                                  }
-                                }}
-                                className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                  formErrors.cardholderName ? 'border-red-500' : 'border-gray-300'
-                                }`}
-                              />
-                              {formErrors.cardholderName && (
-                                <p className="text-red-500 text-xs mt-1">{formErrors.cardholderName}</p>
-                              )}
-                            </div>
-                            <div className="pt-4">
-                              <Button 
-                                type="submit"
-                                disabled={isProcessing}
-                                className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-50"
-                              >
-                                <CreditCard className="w-4 h-4 mr-2" />
-                                {isProcessing ? 'Processing Payment...' : `Pay ${invoice ? formatCurrency(invoice.totalAmount, invoice.currency) : ''} Now`}
-                              </Button>
-                            </div>
-                            <div className="text-center">
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                disabled={isProcessing}
-                                onClick={() => {
-                                  setClientSecret(null);
-                                  setPaymentIntentId(null);
-                                  setCardNumber('');
-                                  setExpiryDate('');
-                                  setCvc('');
-                                  setCardholderName('');
-                                  setFormErrors({});
-                                }}
-                              >
-                                Cancel Payment
-                              </Button>
-                            </div>
-                          </div>
-                        </form>
-                        <div className="mt-3 text-xs text-gray-500 text-center">
-                          <p>🔒 Your payment information is secure and encrypted</p>
-                          <p>Powered by Stripe</p>
-                        </div>
-                      </div>
-                    )}
                   </div>
                 )}
               </div>

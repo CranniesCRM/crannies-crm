@@ -203,6 +203,31 @@ const emptyManualForm = () => ({
     },
   });
 
+  const updateInvoiceStatusMutation = useMutation({
+    mutationFn: async ({ invoiceId, status }: { invoiceId: string; status: string }) => {
+      const response = await fetch(`/api/payables/purchase-invoices/${invoiceId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (!response.ok) {
+        throw new Error((await response.json())?.message || "Failed to update invoice status");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Status updated", description: "Invoice status has been changed." });
+      queryClient.invalidateQueries({ queryKey: ["/api/payables/purchase-invoices"] });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Update failed",
+        description: error?.message || "Unable to update invoice status.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleManualSubmit = () => {
     if (!formState.vendorId) {
       toast({ title: "Vendor required", description: "Select a vendor before saving." });
@@ -342,9 +367,26 @@ const emptyManualForm = () => ({
                     <p className="text-xs uppercase tracking-wide text-muted-foreground">Invoice</p>
                     <p className="text-xl font-semibold text-slate-900">{selectedInvoice.invoiceNumber}</p>
                   </div>
-                  <Badge className={statusVariants[selectedInvoice.status] || statusVariants.pending}>
-                    {selectedInvoice.status}
-                  </Badge>
+                  <Select
+                    value={selectedInvoice.status}
+                    onValueChange={(value) => updateInvoiceStatusMutation.mutate({
+                      invoiceId: selectedInvoice.id,
+                      status: value
+                    })}
+                    disabled={updateInvoiceStatusMutation.isPending}
+                  >
+                    <SelectTrigger className="w-32">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="draft">Draft</SelectItem>
+                      <SelectItem value="pending">Pending</SelectItem>
+                      <SelectItem value="approved">Approved</SelectItem>
+                      <SelectItem value="paid">Paid</SelectItem>
+                      <SelectItem value="overdue">Overdue</SelectItem>
+                      <SelectItem value="cancelled">Cancelled</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div>
                   <p className="text-3xl font-semibold text-slate-900">

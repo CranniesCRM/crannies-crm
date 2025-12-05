@@ -1,32 +1,89 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { 
-  Building2, 
-  Receipt, 
-  CreditCard, 
-  Package, 
-  CheckCircle, 
-  Clock, 
+import {
+  Building2,
+  Receipt,
+  CreditCard,
+  Package,
+  CheckCircle,
+  Clock,
   AlertTriangle,
   Plus,
-  Filter,
-  Search,
   Download,
   Upload
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import VendorsPage from "./vendors";
+import { Link } from "wouter";
 import PurchaseInvoicesPage from "./purchase-invoices";
+import { CompanyLogo } from "@/components/company-logo";
+import { useToast } from "@/hooks/use-toast";
 import type { Vendor } from "@shared/schema";
+
+// Money input component with proper formatting
+function MoneyInput({ value, onChange, placeholder = "0.00", ...props }: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  [key: string]: any;
+}) {
+  const [isEditing, setIsEditing] = useState(false);
+
+  const formatCurrency = (numStr: string) => {
+    if (!numStr || numStr === '0') return '';
+    const num = parseFloat(numStr);
+    if (isNaN(num)) return numStr;
+    return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  const parseCurrency = (formattedStr: string) => {
+    return formattedStr.replace(/,/g, '');
+  };
+
+  const handleFocus = () => {
+    setIsEditing(true);
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.target.value.replace(/[^\d.]/g, '');
+    onChange(input);
+  };
+
+  const handleBlur = () => {
+    setIsEditing(false);
+    if (value) {
+      const num = parseFloat(value);
+      if (!isNaN(num)) {
+        onChange(num.toString());
+      }
+    }
+  };
+
+  const displayValue = isEditing ? value : (value ? formatCurrency(value) : '');
+
+  return (
+    <div className="relative">
+      <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground">$</span>
+      <input
+        {...props}
+        type="text"
+        value={displayValue}
+        onChange={handleChange}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        placeholder={placeholder}
+        className={`flex h-10 w-full rounded-md border border-input bg-background px-8 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${props.className || ''}`}
+      />
+    </div>
+  );
+}
 
 const fetchJSON = async <T,>(url: string): Promise<T> => {
   const response = await fetch(url, { credentials: "include" });
@@ -38,6 +95,8 @@ const fetchJSON = async <T,>(url: string): Promise<T> => {
 
 export default function AccountsPayable() {
   const { user } = useAuth();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const { data: vendors = [], isLoading: vendorsLoading } = useQuery<Vendor[]>({
     queryKey: ["/api/vendors"],
     queryFn: () => fetchJSON<Vendor[]>("/api/vendors"),
@@ -62,15 +121,15 @@ export default function AccountsPayable() {
     title: '',
     description: '',
     vendorId: '',
-    totalAmount: 0,
+    totalAmount: '',
     dueDate: '',
-    invoiceDate: '',
+    status: 'pending',
   });
   const [poForm, setPoForm] = useState({
     title: '',
     description: '',
     vendorId: '',
-    totalAmount: 0,
+    totalAmount: '',
     requestedDeliveryDate: '',
   });
   const [paymentRunForm, setPaymentRunForm] = useState({
@@ -86,14 +145,39 @@ export default function AccountsPayable() {
     notes: '',
   });
 
-  // Sample data for AP dashboard
-  const stats = {
-    totalVendors: 24,
-    pendingInvoices: 12,
-    overdueAmount: 15420, // in cents
-    monthlySpend: 89450, // in cents
-    pendingApprovals: 5,
-  };
+  const createPurchaseInvoice = useMutation({
+    mutationFn: async (payload: any) => {
+      const res = await fetch("/api/invoices/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payables/purchase-invoices"] });
+      toast({ title: "Purchase invoice created", description: "The invoice has been added to your payables." });
+      setShowInvoiceModal(false);
+      setInvoiceForm({
+        title: '',
+        description: '',
+        vendorId: '',
+        totalAmount: '',
+        dueDate: '',
+        status: 'pending',
+      });
+    },
+    onError: (err) => {
+      toast({
+        title: "Unable to create invoice",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
+    },
+  });
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -121,167 +205,9 @@ export default function AccountsPayable() {
         </div>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Vendors</CardTitle>
-            <Building2 className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{stats.totalVendors}</div>
-            <p className="text-xs text-muted-foreground">Active suppliers</p>
-          </CardContent>
-        </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Pending Invoices</CardTitle>
-            <Receipt className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{stats.pendingInvoices}</div>
-            <p className="text-xs text-muted-foreground">Awaiting approval</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Overdue Amount</CardTitle>
-            <AlertTriangle className="h-4 w-4 text-red-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-red-600">
-              ${(stats.overdueAmount / 100).toLocaleString()}
-            </div>
-            <p className="text-xs text-muted-foreground">Past due invoices</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Monthly Spend</CardTitle>
-            <CreditCard className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              ${(stats.monthlySpend / 100).toLocaleString()}
-            </div>
-            <p className="text-xs text-muted-foreground">This month</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Pending Approvals</CardTitle>
-            <Clock className="h-4 w-4 text-orange-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-orange-600">
-              {stats.pendingApprovals}
-            </div>
-            <p className="text-xs text-muted-foreground">Awaiting review</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Main Content Tabs */}
-      <Tabs defaultValue="vendors" className="space-y-4">
-        <div className="flex items-center justify-between">
-          <TabsList>
-            <TabsTrigger value="vendors">Vendors</TabsTrigger>
-            <TabsTrigger value="invoices">Purchase Invoices</TabsTrigger>
-            <TabsTrigger value="purchase-orders">Purchase Orders</TabsTrigger>
-            <TabsTrigger value="payments">Payment Runs</TabsTrigger>
-            <TabsTrigger value="receipts">Receipts</TabsTrigger>
-          </TabsList>
-
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm">
-              <Filter className="mr-2 h-4 w-4" />
-              Filter
-            </Button>
-            <Button variant="outline" size="sm">
-              <Search className="mr-2 h-4 w-4" />
-              Search
-            </Button>
-          </div>
-        </div>
-
-        <TabsContent value="vendors" className="space-y-4">
-          <VendorsPage embedded />
-        </TabsContent>
-
-        <TabsContent value="invoices" className="space-y-4">
-          <PurchaseInvoicesPage embedded />
-        </TabsContent>
-
-        <TabsContent value="purchase-orders" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Purchase Orders</CardTitle>
-              <CardDescription>
-                Track purchase orders and their fulfillment status
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-center py-12 text-muted-foreground">
-                <Package className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                <h3 className="font-semibold mb-2">No purchase orders yet</h3>
-                <p className="text-sm mb-4">Create purchase orders to track your spending</p>
-                <Button onClick={() => setShowPurchaseOrderModal(true)}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Create PO
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="payments" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Payment Runs</CardTitle>
-              <CardDescription>
-                Process batch payments via ACH, checks, or wire transfers
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-center py-12 text-muted-foreground">
-                <CreditCard className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                <h3 className="font-semibold mb-2">No payment runs yet</h3>
-                <p className="text-sm mb-4">Set up automated payment processing</p>
-                <Button onClick={() => setShowPaymentRunModal(true)}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  New Payment Run
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="receipts" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Goods Receipts</CardTitle>
-              <CardDescription>
-                Track receiving and complete the 3-way matching process
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-center py-12 text-muted-foreground">
-                <CheckCircle className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                <h3 className="font-semibold mb-2">No receipts recorded yet</h3>
-                <p className="text-sm mb-4">Record goods and services received</p>
-                <Button onClick={() => setShowReceiptModal(true)}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Record Receipt
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+      {/* Purchase Invoices */}
+      <PurchaseInvoicesPage embedded />
 
       {/* Create Vendor Modal */}
       <Dialog open={showVendorModal} onOpenChange={setShowVendorModal}>
@@ -414,7 +340,14 @@ export default function AccountsPayable() {
                   ) : (
                     vendors.map((vendor) => (
                       <SelectItem key={vendor.id} value={vendor.id}>
-                        {vendor.name}
+                        <div className="flex items-center gap-2">
+                          <CompanyLogo
+                            domain={vendor.website || vendor.email}
+                            className="h-5 w-5 flex-shrink-0"
+                            alt={`${vendor.name} logo`}
+                          />
+                          <span>{vendor.name}</span>
+                        </div>
                       </SelectItem>
                     ))
                   )}
@@ -422,23 +355,12 @@ export default function AccountsPayable() {
               </Select>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="invoiceAmount">Amount ($)</Label>
-              <Input
+              <Label htmlFor="invoiceAmount">Amount</Label>
+              <MoneyInput
                 id="invoiceAmount"
-                type="number"
-                step="0.01"
-                value={invoiceForm.totalAmount / 100}
-                onChange={(e) => setInvoiceForm({...invoiceForm, totalAmount: Math.round(parseFloat(e.target.value || '0') * 100)})}
+                value={invoiceForm.totalAmount}
+                onChange={(value) => setInvoiceForm({...invoiceForm, totalAmount: value})}
                 placeholder="0.00"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="invoiceDate">Invoice Date</Label>
-              <Input
-                id="invoiceDate"
-                type="date"
-                value={invoiceForm.invoiceDate}
-                onChange={(e) => setInvoiceForm({...invoiceForm, invoiceDate: e.target.value})}
               />
             </div>
             <div className="grid gap-2">
@@ -449,6 +371,25 @@ export default function AccountsPayable() {
                 value={invoiceForm.dueDate}
                 onChange={(e) => setInvoiceForm({...invoiceForm, dueDate: e.target.value})}
               />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="invoiceStatus">Status</Label>
+              <Select
+                value={invoiceForm.status}
+                onValueChange={(value) => setInvoiceForm({...invoiceForm, status: value})}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="draft">Draft</SelectItem>
+                  <SelectItem value="pending">Pending</SelectItem>
+                  <SelectItem value="sent">Sent</SelectItem>
+                  <SelectItem value="paid">Paid</SelectItem>
+                  <SelectItem value="overdue">Overdue</SelectItem>
+                  <SelectItem value="cancelled">Cancelled</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="invoiceDescription">Description</Label>
@@ -464,21 +405,23 @@ export default function AccountsPayable() {
             <Button variant="outline" onClick={() => setShowInvoiceModal(false)}>
               Cancel
             </Button>
-            <Button 
+            <Button
               onClick={() => {
-                setShowInvoiceModal(false);
-                setInvoiceForm({
-                  title: '',
-                  description: '',
-                  vendorId: '',
-                  totalAmount: 0,
-                  dueDate: '',
-                  invoiceDate: '',
+                const today = new Date().toISOString().split('T')[0];
+                const amountInCents = Math.round(parseFloat(invoiceForm.totalAmount || '0') * 100);
+                createPurchaseInvoice.mutate({
+                  title: invoiceForm.title,
+                  description: invoiceForm.description,
+                  vendorId: invoiceForm.vendorId,
+                  totalAmount: amountInCents,
+                  dueDate: invoiceForm.dueDate || null,
+                  invoiceDate: today,
+                  status: invoiceForm.status,
                 });
               }}
-              disabled={!invoiceForm.title || !invoiceForm.vendorId}
+              disabled={!invoiceForm.title || !invoiceForm.vendorId || createPurchaseInvoice.isPending}
             >
-              Create Invoice
+              {createPurchaseInvoice.isPending ? "Creating..." : "Create Invoice"}
             </Button>
           </div>
         </DialogContent>
@@ -529,7 +472,14 @@ export default function AccountsPayable() {
                   ) : (
                     vendors.map((vendor) => (
                       <SelectItem key={vendor.id} value={vendor.id}>
-                        {vendor.name}
+                        <div className="flex items-center gap-2">
+                          <CompanyLogo
+                            domain={vendor.website || vendor.email}
+                            className="h-5 w-5 flex-shrink-0"
+                            alt={`${vendor.name} logo`}
+                          />
+                          <span>{vendor.name}</span>
+                        </div>
                       </SelectItem>
                     ))
                   )}
@@ -537,13 +487,11 @@ export default function AccountsPayable() {
               </Select>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="poAmount">Total Amount ($)</Label>
-              <Input
+              <Label htmlFor="poAmount">Total Amount</Label>
+              <MoneyInput
                 id="poAmount"
-                type="number"
-                step="0.01"
-                value={poForm.totalAmount / 100}
-                onChange={(e) => setPoForm({...poForm, totalAmount: Math.round(parseFloat(e.target.value || '0') * 100)})}
+                value={poForm.totalAmount}
+                onChange={(value) => setPoForm({...poForm, totalAmount: value})}
                 placeholder="0.00"
               />
             </div>
@@ -577,7 +525,7 @@ export default function AccountsPayable() {
                   title: '',
                   description: '',
                   vendorId: '',
-                  totalAmount: 0,
+                  totalAmount: '',
                   requestedDeliveryDate: '',
                 });
               }}
@@ -699,7 +647,14 @@ export default function AccountsPayable() {
                   ) : (
                     vendors.map((vendor) => (
                       <SelectItem key={vendor.id} value={vendor.id}>
-                        {vendor.name}
+                        <div className="flex items-center gap-2">
+                          <CompanyLogo
+                            domain={vendor.website || vendor.email}
+                            className="h-5 w-5 flex-shrink-0"
+                            alt={`${vendor.name} logo`}
+                          />
+                          <span>{vendor.name}</span>
+                        </div>
                       </SelectItem>
                     ))
                   )}

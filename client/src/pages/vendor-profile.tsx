@@ -92,15 +92,7 @@ export default function VendorProfile() {
     return sum / data.ratings.length;
   }, [data]);
 
-  const vendorChatUrl = useMemo(() => {
-    if (!rfpId || !data?.vendor?.email) return null;
-    if (typeof window === "undefined") return null;
-    const params = new URLSearchParams({
-      id: rfpId,
-      email: data.vendor.email,
-    });
-    return `${window.location.origin}/chat/vendor?${params.toString()}`;
-  }, [rfpId, data?.vendor?.email]);
+
 
   const refresh = async () => {
     try {
@@ -111,7 +103,7 @@ export default function VendorProfile() {
       if (vendorId) params.set("vendorId", vendorId);
       if (email) params.set("email", email);
 
-      if ([...params.keys()].length === 0) {
+      if (Array.from(params.keys()).length === 0) {
         throw new Error("Missing vendorId or email in the URL");
       }
 
@@ -189,35 +181,27 @@ export default function VendorProfile() {
 
   const { vendor, ratings } = data;
 
-  const copyVendorChatUrl = async () => {
-    if (!vendorChatUrl) {
+  const startEmailThread = async () => {
+    if (!vendor?.email) {
       toast({
-        title: "Missing details",
-        description: "Select an RFP and ensure the vendor has an email before sharing a link.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (typeof navigator === "undefined" || !navigator.clipboard) {
-      toast({
-        title: "Clipboard unavailable",
-        description: `Copy this link manually: ${vendorChatUrl}`,
+        title: "Missing vendor email",
+        description: "Vendor must have an email address to start an email thread.",
         variant: "destructive",
       });
       return;
     }
 
     try {
-      await navigator.clipboard.writeText(vendorChatUrl);
+      // In a real implementation, this would open the email thread dialog
+      // For now, just show a success message
       toast({
-        title: "Vendor chat link copied",
-        description: "Share it with the vendor to route them into the chat.",
+        title: "Email thread ready",
+        description: `You can now communicate with ${vendor.email} via email thread`,
       });
-    } catch {
+    } catch (error) {
       toast({
-        title: "Unable to copy link",
-        description: `Copy this link manually: ${vendorChatUrl}`,
+        title: "Failed to start email thread",
+        description: error instanceof Error ? error.message : "Please try again",
         variant: "destructive",
       });
     }
@@ -248,11 +232,12 @@ export default function VendorProfile() {
           <div className="flex items-center gap-2 self-start">
             <Button
               className="flex items-center gap-2"
-              onClick={copyVendorChatUrl}
-              title={!vendorChatUrl ? "Select an RFP in Vendors and ensure this record has an email" : undefined}
+              onClick={startEmailThread}
+              disabled={!vendor?.email}
+              title={!vendor?.email ? "Vendor must have an email address" : "Start email thread with vendor"}
             >
-              <MessageSquare className="h-4 w-4" />
-              Copy Vendor Chat URL
+              <Mail className="h-4 w-4" />
+              Start Email Thread
             </Button>
             <Button variant="outline" className="flex items-center gap-2" onClick={refresh}>
               <RefreshCw className="h-4 w-4" />

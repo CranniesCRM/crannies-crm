@@ -1,13 +1,14 @@
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import {
   Form,
   FormControl,
@@ -20,6 +21,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ChevronLeft, CircleDot } from "lucide-react";
+import type { Rfp } from "@shared/schema";
 
 const newIssueSchema = z.object({
   title: z.string().min(1, "Title is required"),
@@ -29,13 +31,24 @@ const newIssueSchema = z.object({
   contactCompany: z.string().optional(),
   dealValue: z.string().optional(),
   labels: z.string().optional(),
-});
+  issueType: z.enum(["deal", "rfp"]).default("deal"),
+  rfpId: z.string().optional(),
+}).refine(
+  (data) => data.issueType === "deal" || (data.issueType === "rfp" && data.rfpId),
+  {
+    message: "Select an RFP for vendor issues",
+    path: ["rfpId"],
+  },
+);
 
 type NewIssueData = z.infer<typeof newIssueSchema>;
 
 export default function IssueNew() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
+  const { data: rfps = [] } = useQuery<Rfp[]>({
+    queryKey: ["/api/rfps"],
+  });
 
   const form = useForm<NewIssueData>({
     resolver: zodResolver(newIssueSchema),
@@ -47,8 +60,11 @@ export default function IssueNew() {
       contactCompany: "",
       dealValue: "",
       labels: "",
+      issueType: "deal",
+      rfpId: "",
     },
   });
+  const issueType = form.watch("issueType");
 
   const createIssueMutation = useMutation({
     mutationFn: async (data: NewIssueData) => {
@@ -58,6 +74,8 @@ export default function IssueNew() {
         labels: data.labels
           ? data.labels.split(",").map((l) => l.trim()).filter(Boolean)
           : undefined,
+        issueType: data.issueType || "deal",
+        rfpId: data.issueType === "rfp" ? data.rfpId || undefined : undefined,
       };
       return await apiRequest("POST", "/api/issues", payload);
     },
@@ -140,13 +158,74 @@ export default function IssueNew() {
                         data-testid="textarea-issue-description"
                       />
                     </FormControl>
-                    <FormDescription>
-                      Use Markdown for formatting. You can @mention team members.
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              <FormDescription>
+                Use Markdown for formatting. You can @mention team members.
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name="issueType"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Issue type</FormLabel>
+              <Select value={field.value} onValueChange={field.onChange}>
+                <FormControl>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select issue type" />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  <SelectItem value="deal">Deal (customer chat)</SelectItem>
+                  <SelectItem value="rfp">RFP vendor chat</SelectItem>
+                </SelectContent>
+              </Select>
+              <FormDescription>
+                Route this thread to a customer or a vendor responding to an RFP.
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        {issueType === "rfp" && (
+          <FormField
+            control={form.control}
+            name="rfpId"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Linked RFP</FormLabel>
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select an RFP" />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {rfps.length === 0 ? (
+                      <SelectItem value="" disabled>
+                        No RFPs available
+                      </SelectItem>
+                    ) : (
+                      rfps.map((rfp) => (
+                        <SelectItem key={rfp.id} value={rfp.id}>
+                          {rfp.title}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+                <FormDescription>
+                  Vendors will be routed to this RFP&apos;s shared chat.
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        )}
 
               <div className="grid sm:grid-cols-2 gap-4">
                 <FormField
@@ -181,6 +260,11 @@ export default function IssueNew() {
                           data-testid="input-contact-email"
                         />
                       </FormControl>
+                      <FormDescription>
+                        {issueType === "rfp"
+                          ? "Required so we can invite the vendor to Stream chat."
+                          : "Optional if you just need a name today."}
+                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}

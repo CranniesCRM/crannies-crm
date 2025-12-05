@@ -95,6 +95,8 @@ export const issues = pgTable("issues", {
   workspaceId: varchar("workspace_id").notNull().references(() => workspaces.id),
   issueNumber: integer("issue_number").notNull(),
   title: varchar("title").notNull(),
+  issueType: varchar("issue_type").notNull().default("deal"), // deal (customer) or rfp (vendor)
+  rfpId: varchar("rfp_id").references(() => rfps.id),
   chatTitle: varchar("chat_title"), // Separate title for published chat
   description: text("description"),
   status: varchar("status").notNull().default("open"), // open, closed, won, lost
@@ -178,65 +180,6 @@ export const activities = pgTable("activities", {
 });
 
 
-
-// Schema types and insert schemas
-export const insertUserSchema = createInsertSchema(users).omit({ createdAt: true, updatedAt: true });
-export const insertWorkspaceSchema = createInsertSchema(workspaces).omit({ createdAt: true, updatedAt: true });
-export const insertIssueSchema = createInsertSchema(issues).omit({ createdAt: true, updatedAt: true, id: true, issueNumber: true });
-export const insertCommentSchema = createInsertSchema(comments).omit({ createdAt: true, updatedAt: true, id: true });
-export const insertAttachmentSchema = createInsertSchema(attachments).omit({ createdAt: true, id: true });
-export const insertInviteSchema = createInsertSchema(invites).omit({ createdAt: true, id: true });
-export const insertLabelSchema = createInsertSchema(labels).omit({ createdAt: true, id: true });
-export const insertActivitySchema = createInsertSchema(activities).omit({ createdAt: true, id: true });
-export const insertIssueAssigneeSchema = createInsertSchema(issueAssignees).omit({ createdAt: true, id: true });
-
-export const insertWorkspaceSubscriptionSchema = createInsertSchema(workspaceSubscriptions).omit({ createdAt: true, updatedAt: true, id: true });
-
-export type UpsertUser = typeof users.$inferInsert;
-export type User = typeof users.$inferSelect;
-export type InsertUser = z.infer<typeof insertUserSchema>;
-
-export type Workspace = typeof workspaces.$inferSelect;
-export type InsertWorkspace = z.infer<typeof insertWorkspaceSchema>;
-
-export type Issue = typeof issues.$inferSelect;
-export type InsertIssue = z.infer<typeof insertIssueSchema>;
-
-export type Comment = typeof comments.$inferSelect;
-export type InsertComment = z.infer<typeof insertCommentSchema>;
-
-export type Attachment = typeof attachments.$inferSelect;
-export type InsertAttachment = z.infer<typeof insertAttachmentSchema>;
-
-export type Invite = typeof invites.$inferSelect;
-export type InsertInvite = z.infer<typeof insertInviteSchema>;
-
-export type Label = typeof labels.$inferSelect;
-export type InsertLabel = z.infer<typeof insertLabelSchema>;
-
-export type Activity = typeof activities.$inferSelect;
-export type InsertActivity = z.infer<typeof insertActivitySchema>;
-
-export type IssueAssignee = typeof issueAssignees.$inferSelect;
-export type InsertIssueAssignee = z.infer<typeof insertIssueAssigneeSchema>;
-
-
-
-export type WorkspaceSubscription = typeof workspaceSubscriptions.$inferSelect;
-export type InsertWorkspaceSubscription = z.infer<typeof insertWorkspaceSubscriptionSchema>;
-
-// Extended types for frontend
-export type IssueWithDetails = Issue & {
-  assignees?: (User | null)[];
-  createdBy?: User | null;
-  comments?: CommentWithAuthor[];
-  commentCount?: number;
-};
-
-export type CommentWithAuthor = Comment & {
-  author?: User | null;
-  attachments?: Attachment[];
-};
 
 // ==================== ACCOUNTS PAYABLE ====================
 
@@ -584,26 +527,36 @@ export const proposalIssues = pgTable("proposal_issues", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-// Vendor Communications - General vendor-facing communication hub (chat, notes, notifications)
-export const vendorCommunications = pgTable("vendor_communications", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  vendorId: varchar("vendor_id").references(() => vendors.id, { onDelete: "cascade" }),
-  proposalId: varchar("proposal_id").references(() => proposals.id, { onDelete: "set null" }),
-  rfpId: varchar("rfp_id").references(() => rfps.id, { onDelete: "set null" }),
-  issueId: varchar("issue_id").references(() => issues.id, { onDelete: "set null" }),
-  workspaceId: varchar("workspace_id").references(() => workspaces.id),
-  parentCommunicationId: varchar("parent_communication_id").references(() => vendorCommunications.id, { onDelete: "cascade" }),
-  authorId: varchar("author_id").references(() => users.id),
-  authorName: varchar("author_name"), // For external vendor messages
-  authorEmail: varchar("author_email"), // For external vendor messages
-  channel: varchar("channel").notNull().default("chat"), // chat, email, notification
-  direction: varchar("direction").notNull().default("outbound"), // outbound (to vendor) / inbound (from vendor)
-  isVendorMessage: boolean("is_vendor_message").default(false),
-  content: text("content").notNull(),
-  metadata: jsonb("metadata"),
-  createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
-});
+// Unified conversation messages (internal issues, vendor chat, customer chat)
+export const conversationMessages = pgTable(
+  "conversation_messages",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    workspaceId: varchar("workspace_id").notNull().references(() => workspaces.id),
+    issueId: varchar("issue_id").references(() => issues.id, { onDelete: "cascade" }),
+    rfpId: varchar("rfp_id").references(() => rfps.id, { onDelete: "cascade" }),
+    vendorEmail: varchar("vendor_email"),
+    contactEmail: varchar("contact_email"),
+    parentMessageId: varchar("parent_message_id"),
+    rootMessageId: varchar("root_message_id"),
+    authorType: varchar("author_type").notNull(), // internal, vendor, contact
+    authorId: varchar("author_id"),
+    authorName: varchar("author_name"),
+    authorEmail: varchar("author_email"),
+    authorAvatarUrl: varchar("author_avatar_url"),
+    authorCompany: varchar("author_company"),
+    authorCompanyLogo: varchar("author_company_logo"),
+    content: text("content").notNull(),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [
+    index("conversation_messages_issue_idx").on(table.issueId),
+    index("conversation_messages_rfp_vendor_idx").on(table.rfpId, table.vendorEmail),
+    index("conversation_messages_workspace_idx").on(table.workspaceId),
+  ],
+);
 
 // ==================== PROCUREMENT ====================
 
@@ -688,11 +641,30 @@ export const spendTransactions = pgTable("spend_transactions", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+
 // ==================== MERCURY INTEGRATION ====================
 
 // ==================== STRIPE CONNECT INTEGRATION ====================
 
 // ==================== SCHEMA GENERATION ====================
+
+// Core entity insert schemas
+export const insertUserSchema = createInsertSchema(users).omit({ createdAt: true, updatedAt: true });
+export const insertWorkspaceSchema = createInsertSchema(workspaces).omit({ createdAt: true, updatedAt: true });
+export const insertIssueSchema = createInsertSchema(issues).omit({ createdAt: true, updatedAt: true, id: true, issueNumber: true });
+export const insertCommentSchema = createInsertSchema(comments).omit({ createdAt: true, updatedAt: true, id: true });
+export const insertAttachmentSchema = createInsertSchema(attachments).omit({ createdAt: true, id: true });
+export const insertInviteSchema = createInsertSchema(invites).omit({ createdAt: true, id: true });
+export const insertLabelSchema = createInsertSchema(labels).omit({ createdAt: true, id: true });
+export const insertActivitySchema = createInsertSchema(activities).omit({ createdAt: true, id: true });
+export const insertIssueAssigneeSchema = createInsertSchema(issueAssignees).omit({ createdAt: true, id: true });
+export const insertConversationMessageSchema = createInsertSchema(conversationMessages).omit({
+  createdAt: true,
+  updatedAt: true,
+  id: true,
+  rootMessageId: true,
+});
+export const insertWorkspaceSubscriptionSchema = createInsertSchema(workspaceSubscriptions).omit({ createdAt: true, updatedAt: true, id: true });
 
 // Insert schemas for new tables
 export const insertVendorSchema = createInsertSchema(vendors).omit({ createdAt: true, updatedAt: true });
@@ -720,14 +692,49 @@ export const insertSpendTransactionSchema = createInsertSchema(spendTransactions
 
 // RFP Schemas
 export const insertRfpSchema = createInsertSchema(rfps).omit({ createdAt: true, updatedAt: true });
-export const insertProposalSchema = createInsertSchema(proposals).omit({ createdAt: true, updatedAt: true });
+export const insertProposalSchema = createInsertSchema(proposals).omit({ updatedAt: true });
 export const insertProposalIssueSchema = createInsertSchema(proposalIssues).omit({ createdAt: true });
-export const insertVendorCommunicationSchema = createInsertSchema(vendorCommunications).omit({ createdAt: true, updatedAt: true });
 
-
-// Stripe Connect Integration Schemas
 
 // ==================== TYPE DEFINITIONS ====================
+
+// Core entity types
+export type UpsertUser = typeof users.$inferInsert;
+export type User = typeof users.$inferSelect;
+export type InsertUser = z.infer<typeof insertUserSchema>;
+export type Workspace = typeof workspaces.$inferSelect;
+export type InsertWorkspace = z.infer<typeof insertWorkspaceSchema>;
+export type Issue = typeof issues.$inferSelect;
+export type InsertIssue = z.infer<typeof insertIssueSchema>;
+export type Comment = typeof comments.$inferSelect;
+export type InsertComment = z.infer<typeof insertCommentSchema>;
+export type Attachment = typeof attachments.$inferSelect;
+export type InsertAttachment = z.infer<typeof insertAttachmentSchema>;
+export type Invite = typeof invites.$inferSelect;
+export type InsertInvite = z.infer<typeof insertInviteSchema>;
+export type Label = typeof labels.$inferSelect;
+export type InsertLabel = z.infer<typeof insertLabelSchema>;
+export type Activity = typeof activities.$inferSelect;
+export type InsertActivity = z.infer<typeof insertActivitySchema>;
+export type IssueAssignee = typeof issueAssignees.$inferSelect;
+export type InsertIssueAssignee = z.infer<typeof insertIssueAssigneeSchema>;
+export type ConversationMessage = typeof conversationMessages.$inferSelect;
+export type InsertConversationMessage = z.infer<typeof insertConversationMessageSchema>;
+export type WorkspaceSubscription = typeof workspaceSubscriptions.$inferSelect;
+export type InsertWorkspaceSubscription = z.infer<typeof insertWorkspaceSubscriptionSchema>;
+
+// Extended types for frontend
+export type IssueWithDetails = Issue & {
+  assignees?: (User | null)[];
+  createdBy?: User | null;
+  comments?: CommentWithAuthor[];
+  commentCount?: number;
+};
+
+export type CommentWithAuthor = Comment & {
+  author?: User | null;
+  attachments?: Attachment[];
+};
 
 // AP Types
 export type Vendor = typeof vendors.$inferSelect;
@@ -775,6 +782,52 @@ export type InsertSpendCategory = z.infer<typeof insertSpendCategorySchema>;
 export type SpendTransaction = typeof spendTransactions.$inferSelect;
 export type InsertSpendTransaction = z.infer<typeof insertSpendTransactionSchema>;
 
+// ==================== EMAIL THREADS ====================
+
+// Email threads for bidirectional email communication
+export const emailThreads = pgTable("email_threads", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  workspaceId: varchar("workspace_id").notNull().references(() => workspaces.id),
+  issueId: varchar("issue_id").references(() => issues.id),
+  subject: varchar("subject").notNull(),
+  participants: text("participants").array(), // Array of email addresses
+  status: varchar("status").notNull().default("active"), // active, archived
+  lastMessageAt: timestamp("last_message_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Email messages within threads
+export const emailMessages = pgTable("email_messages", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  threadId: varchar("thread_id").notNull().references(() => emailThreads.id, { onDelete: "cascade" }),
+  messageId: varchar("message_id"), // External message ID from email provider
+  fromEmail: varchar("from_email").notNull(),
+  toEmails: text("to_emails").array(), // Array of recipient emails
+  ccEmails: text("cc_emails").array(), // Array of CC emails
+  bccEmails: text("bcc_emails").array(), // Array of BCC emails
+  subject: varchar("subject").notNull(),
+  bodyHtml: text("body_html"),
+  bodyText: text("body_text"),
+  isFromUser: boolean("is_from_user").default(false), // Whether sent by internal user
+  direction: varchar("direction").notNull(), // inbound, outbound
+  status: varchar("status").notNull().default("received"), // received, sent, failed
+  sentAt: timestamp("sent_at"),
+  receivedAt: timestamp("received_at"),
+  attachments: jsonb("attachments"), // Array of attachment objects
+  metadata: jsonb("metadata"), // Additional email metadata
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  index("email_messages_thread_idx").on(table.threadId),
+  index("email_messages_message_id_idx").on(table.messageId),
+  index("email_messages_received_at_idx").on(table.receivedAt),
+]);
+
+// Insert schemas for email tables
+export const insertEmailThreadSchema = createInsertSchema(emailThreads).omit({ createdAt: true, updatedAt: true, id: true });
+export const insertEmailMessageSchema = createInsertSchema(emailMessages).omit({ createdAt: true, updatedAt: true, id: true });
+
 // RFP Types
 export type Rfp = typeof rfps.$inferSelect;
 export type InsertRfp = z.infer<typeof insertRfpSchema>;
@@ -782,7 +835,9 @@ export type Proposal = typeof proposals.$inferSelect;
 export type InsertProposal = z.infer<typeof insertProposalSchema>;
 export type ProposalIssue = typeof proposalIssues.$inferSelect;
 export type InsertProposalIssue = z.infer<typeof insertProposalIssueSchema>;
-export type VendorCommunication = typeof vendorCommunications.$inferSelect;
-export type InsertVendorCommunication = z.infer<typeof insertVendorCommunicationSchema>;
 
-// Stripe Connect Integration Types
+// Email Types
+export type EmailThread = typeof emailThreads.$inferSelect;
+export type InsertEmailThread = z.infer<typeof insertEmailThreadSchema>;
+export type EmailMessage = typeof emailMessages.$inferSelect;
+export type InsertEmailMessage = z.infer<typeof insertEmailMessageSchema>;

@@ -79,8 +79,17 @@ function IssueRow({ issue }: { issue: IssueWithDetails }) {
   const displayedAssignees = issue.assignees?.slice(0, 3) || [];
   const extraAssignees = (issue.assignees?.length || 0) - 3;
 
+  const issueType = issue.issueType === "rfp" || issue.rfpId ? "rfp" : "deal";
+  const vendorEmail = issue.contactEmail?.toLowerCase() || "";
+  const issueLink =
+    issueType === "rfp" && issue.rfpId && vendorEmail
+      ? `/issues/${issue.id}?rfpId=${encodeURIComponent(issue.rfpId)}&email=${encodeURIComponent(
+          vendorEmail,
+        )}`
+      : `/issues/${issue.id}`;
+
   return (
-    <Link href={`/issues/${issue.id}`}>
+    <Link href={issueLink}>
       <div
         className="flex items-center gap-4 p-4 border-b last:border-b-0 hover:bg-muted/50 transition-colors cursor-pointer"
         data-testid={`issue-row-${issue.id}`}

@@ -23,14 +23,26 @@ declare module "http" {
 }
 
 app.use(cookieParser());
-app.use(
+
+// Middleware to conditionally parse JSON based on route
+app.use((req, res, next) => {
+  // Skip JSON parsing for webhook routes
+  if (req.path.startsWith('/api/webhooks/') || req.path.startsWith('/api/stripe/invoicing/webhook')) {
+    return next();
+  }
+
+  // For non-webhook routes, use JSON parsing
   express.json({
     limit: "50mb",
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
-  }),
-);
+  })(req, res, next);
+});
+
+// Raw body middleware for webhook routes
+app.use("/api/webhooks/stripe", express.raw({ type: "application/json" }));
+app.use("/api/stripe/invoicing/webhook", express.raw({ type: "application/json" }));
 
 app.use(express.urlencoded({ extended: false, limit: "50mb" }));
 

@@ -8,16 +8,13 @@ import {
   CheckCircle2,
   Globe,
   Mail,
-  Menu,
-  MessageCircle,
   Phone,
   Plus,
   Loader2,
   Star,
   Users,
-  Smile,
 } from "lucide-react";
-import type { Proposal, Rfp, Vendor, VendorCommunication } from "@shared/schema";
+import type { Proposal, Rfp, Vendor } from "@shared/schema";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -29,10 +26,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { CompanyLogo, extractDomain } from "@/components/company-logo";
 import { useAuth } from "@/hooks/useAuth";
-import Pusher, { type PresenceChannel } from "pusher-js";
+import RfpPublishModal from "@/pages/rfp-publish";
 
 type VendorFormState = {
   name: string;
@@ -100,13 +99,6 @@ const VendorListSkeleton = () => (
   </div>
 );
 
-type PresenceMember = {
-  id: string;
-  name: string;
-  email?: string;
-};
-
-const QUICK_EMOJIS = ["😀","😁","😂","😅","😊","😍","🤔","🤯","🚀","🔥","👍","🙏"];
 
 type VendorsPageProps = {
   embedded?: boolean;
@@ -116,8 +108,6 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { user } = useAuth();
-  const pusherKey = import.meta.env.VITE_PUSHER_KEY as string | undefined;
-  const pusherCluster = import.meta.env.VITE_PUSHER_CLUSTER as string | undefined;
 
   const { data: vendors = [], isLoading: vendorsLoading } = useQuery<Vendor[]>({
     queryKey: ["/api/vendors"],
@@ -139,29 +129,8 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
     return new URLSearchParams(window.location.search).get("vendorId");
   });
   const [selectedRfpId, setSelectedRfpId] = useState<string | null>(null);
-  const [chatOpen, setChatOpen] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return new URLSearchParams(window.location.search).get("chat") === "1";
-  });
   const [formState, setFormState] = useState<VendorFormState>(initialForm);
-  const [liveMessages, setLiveMessages] = useState<VendorCommunication[]>([]);
-  const [presenceMembers, setPresenceMembers] = useState<PresenceMember[]>([]);
-  const [typingParticipants, setTypingParticipants] = useState<Record<string, number>>({});
-  const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
-  const [isTabActive, setIsTabActive] = useState(() => (typeof document === "undefined" ? true : !document.hidden));
-  const channelRef = useRef<PresenceChannel | null>(null);
-  const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
-  const [messageDraft, setMessageDraft] = useState("");
-  const actorIdentity = useMemo(() => {
-    const fullName = `${user?.firstName ?? ""} ${user?.lastName ?? ""}`.trim();
-    const name = fullName || user?.email?.split("@")[0] || "Workspace user";
-    return {
-      id: user?.id || user?.email || "workspace-user",
-      name,
-      email: user?.email || undefined,
-    };
-  }, [user]);
-  const vendorChannelName = selectedVendorId && selectedRfpId ? `presence-vendor-chat-${selectedVendorId}-${selectedRfpId}` : null;
+  const [showRfpModal, setShowRfpModal] = useState(false);
 
   const selectedVendor = vendors.find((vendor) => vendor.id === selectedVendorId) || null;
 
@@ -171,35 +140,6 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
     }
   }, [vendors, selectedVendorId]);
 
-  const canUseNotifications = useMemo(() => {
-    if (typeof window === "undefined") return false;
-    return typeof Notification !== "undefined" && window.isSecureContext;
-  }, []);
-
-  useEffect(() => {
-    if (!canUseNotifications) return;
-    if (Notification.permission === "default") {
-      Notification.requestPermission().catch(() => {});
-    }
-  }, [canUseNotifications]);
-
-  useEffect(() => {
-    const handler = () => {
-      if (typeof document === "undefined") {
-        setIsTabActive(true);
-        return;
-      }
-      setIsTabActive(!document.hidden);
-    };
-    if (typeof document !== "undefined") {
-      document.addEventListener("visibilitychange", handler);
-    }
-    return () => {
-      if (typeof document !== "undefined") {
-        document.removeEventListener("visibilitychange", handler);
-      }
-    };
-  }, []);
 
   const matchVendorForProposal = (proposal: Proposal & { vendorId?: string | null }) => {
     return vendors.find(
@@ -226,17 +166,6 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
     return vendorProposals[0] || proposalsWithoutVendors[0] || proposals[0];
   }, [vendorProposals, proposalsWithoutVendors, proposals]);
 
-  const typingNames = useMemo(() => Object.keys(typingParticipants), [typingParticipants]);
-
-  const openInternalChat = (rfpId?: string | null) => {
-    if (!rfpId || !selectedVendor?.email) return;
-    const params = new URLSearchParams({
-      id: rfpId,
-      email: selectedVendor.email,
-    });
-    window.open(`/chat/vendor?${params.toString()}`, "_blank", "noopener");
-  };
-
   const getVendorDomain = (vendor?: Vendor | null) => vendor?.website || vendor?.email || null;
 
   const vendorInvoiceShareLink = useMemo(() => {
@@ -261,64 +190,11 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
     }
   }, [vendorInvoiceShareLink, toast]);
 
-  const showVendorNotification = useCallback((message: VendorCommunication) => {
-    if (!canUseNotifications) return;
-    if (isTabActive) return;
-    if (Notification.permission !== "granted") return;
-    try {
-      new Notification(`${message.authorName || "Vendor"} replied`, {
-        body: message.content.slice(0, 80),
-      });
-    } catch {
-      // ignore notification failures
-    }
-  }, [isTabActive, canUseNotifications]);
-
-  const sendTypingSignal = useMemo(() => {
-    let lastSent = 0;
-    return () => {
-      if (!selectedVendor || !selectedRfpId) return;
-      const now = Date.now();
-      if (now - lastSent < 1000) return;
-      lastSent = now;
-      let triggered = false;
-      if (channelRef.current) {
-        try {
-          channelRef.current.trigger("client-typing", { name: actorIdentity.name });
-          triggered = true;
-        } catch {
-          triggered = false;
-        }
-      }
-      if (!triggered) {
-        fetch("/api/vendor-communications/typing", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            vendorId: selectedVendor.id,
-            rfpId: selectedRfpId,
-            name: actorIdentity.name,
-          }),
-        }).catch(() => {});
-      }
-    };
-  }, [selectedVendor?.id, selectedRfpId, actorIdentity.name]);
-
   useEffect(() => {
     if (vendorProposals.length && !selectedRfpId) {
       setSelectedRfpId(vendorProposals[0].rfpId);
     }
   }, [vendorProposals, selectedRfpId]);
-
-  const chatQuery = useQuery<VendorCommunication[]>({
-    queryKey: ["/api/vendor-communications", selectedVendorId, selectedRfpId],
-    enabled: chatOpen && !!selectedVendorId && !!selectedRfpId,
-    queryFn: () =>
-      fetchJSON<VendorCommunication[]>(
-        `/api/vendor-communications?vendorId=${selectedVendorId}&rfpId=${selectedRfpId}`,
-      ),
-  });
 
   const createVendor = useMutation({
     mutationFn: async (payload: Partial<Vendor>) => {
@@ -380,51 +256,6 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
     },
   });
 
-  const sendMessage = useMutation({
-    mutationFn: async (content: string) => {
-      if (!selectedVendor || !selectedRfpId) return null;
-      const res = await fetch("/api/vendor-communications", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          vendorId: selectedVendor.id,
-          rfpId: selectedRfpId,
-          content,
-        }),
-      });
-      if (!res.ok) {
-        throw new Error(await res.text());
-      }
-      return res.json();
-    },
-    onSuccess: (communication) => {
-      if (communication) {
-        setLiveMessages((prev) => (prev.some((msg) => msg.id === communication.id) ? prev : [...prev, communication]));
-      }
-      queryClient.invalidateQueries({ queryKey: ["/api/vendor-communications", selectedVendorId, selectedRfpId] });
-    },
-    onError: (err) => {
-      toast({
-        title: "Chat error",
-        description: err instanceof Error ? err.message : "Unable to send message",
-        variant: "destructive",
-      });
-    },
-  });
-
-  const handleSendMessage = (value: string) => {
-    if (!value.trim() || !selectedVendor || !selectedRfpId) return;
-    sendMessage.mutate(value.trim());
-  };
-
-  const submitComposerMessage = () => {
-    const trimmed = messageDraft.trim();
-    if (!trimmed) return;
-    handleSendMessage(trimmed);
-    setMessageDraft("");
-    setIsEmojiPickerOpen(false);
-  };
-
   const stats = useMemo(() => {
     const avgRating =
       vendors.length > 0
@@ -477,126 +308,6 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
     });
   };
 
-  const chatMessages = useMemo(() => {
-    return liveMessages.slice().sort((a, b) => {
-      return new Date(a.createdAt || "").getTime() - new Date(b.createdAt || "").getTime();
-    });
-  }, [liveMessages]);
-
-  useEffect(() => {
-    setLiveMessages(chatQuery.data || []);
-  }, [chatQuery.data]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const now = Date.now();
-      setTypingParticipants((prev) => {
-        const next: Record<string, number> = {};
-        Object.entries(prev).forEach(([name, ts]) => {
-          if (now - ts < 3500) {
-            next[name] = ts;
-          }
-        });
-        return next;
-      });
-    }, 1500);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    if (!chatOpen) return;
-    scrollAnchorRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatMessages.length, chatOpen]);
-
-  useEffect(() => {
-    if (!chatOpen || !vendorChannelName || !pusherKey || !pusherCluster) return;
-
-    const query = new URLSearchParams({
-      participantId: actorIdentity.id,
-      participantName: actorIdentity.name,
-      participantEmail: actorIdentity.email || "",
-    });
-
-    const pusher = new Pusher(pusherKey, {
-      cluster: pusherCluster,
-      authEndpoint: `/api/pusher/auth?${query.toString()}`,
-    });
-
-    const channel = pusher.subscribe(vendorChannelName) as PresenceChannel;
-    channelRef.current = channel;
-
-    const syncMembers = () => {
-      const members: PresenceMember[] = [];
-      const rawMembers: any = channel.members;
-      if (rawMembers?.each) {
-        rawMembers.each((member: any) => {
-          if (member?.id) {
-            members.push({
-              id: member.id,
-              name: member.info?.name || "Guest",
-              email: member.info?.email,
-            });
-          }
-        });
-      } else if (rawMembers?.members) {
-        Object.entries(rawMembers.members).forEach(([id, info]: [string, any]) => {
-          members.push({
-            id,
-            name: (info as any)?.name || "Guest",
-            email: (info as any)?.email,
-          });
-        });
-      }
-      setPresenceMembers(members);
-    };
-
-    channel.bind("pusher:subscription_succeeded", syncMembers);
-    channel.bind("pusher:member_added", syncMembers);
-    channel.bind("pusher:member_removed", syncMembers);
-
-    channel.bind("new-message", (payload: VendorCommunication) => {
-      setLiveMessages((prev) => (prev.some((msg) => msg.id === payload.id) ? prev : [...prev, payload]));
-      if (payload.isVendorMessage) {
-        toast({
-          title: `New reply from ${payload.authorName || selectedVendor?.name || "Vendor"}`,
-          description: payload.content.slice(0, 80),
-        });
-        showVendorNotification(payload);
-      }
-    });
-
-    const handleTyping = (payload: any) => {
-      if (!payload?.name) return;
-      setTypingParticipants((prev) => ({ ...prev, [payload.name]: Date.now() }));
-    };
-
-    channel.bind("client-typing", handleTyping);
-    channel.bind("typing", handleTyping);
-
-    return () => {
-      channel.unbind("pusher:subscription_succeeded", syncMembers);
-      channel.unbind("pusher:member_added", syncMembers);
-      channel.unbind("pusher:member_removed", syncMembers);
-      channel.unbind("new-message");
-      channel.unbind("client-typing", handleTyping);
-      channel.unbind("typing", handleTyping);
-      channel.unbind_all();
-      pusher.unsubscribe(vendorChannelName);
-      if (channelRef.current === channel) {
-        channelRef.current = null;
-      }
-      pusher.disconnect();
-    };
-  }, [
-    chatOpen,
-    vendorChannelName,
-    pusherKey,
-    pusherCluster,
-    actorIdentity,
-    toast,
-    selectedVendor?.name,
-    showVendorNotification,
-  ]);
 
   const isLoading = vendorsLoading || rfpsLoading;
 
@@ -618,14 +329,19 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
               Manage suppliers, track proposals, and spin up RFP chats without leaving the workspace.
             </p>
           </div>
-          <Dialog>
-            <DialogTrigger asChild>
-              <Button className="flex items-center gap-2">
-                <Plus className="h-4 w-4" />
-                Add vendor
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-lg">
+          <div className="flex items-center gap-3">
+            <Button variant="outline" onClick={() => setShowRfpModal(true)}>
+              <Plus className="h-4 w-4 mr-2" />
+              New RFP
+            </Button>
+            <Dialog>
+              <DialogTrigger asChild>
+                <Button className="flex items-center gap-2">
+                  <Plus className="h-4 w-4" />
+                  Add vendor
+                </Button>
+              </DialogTrigger>
+                <DialogContent className="sm:max-w-lg">
               <DialogHeader>
                 <DialogTitle>Add vendor</DialogTitle>
                 <CardDescription>Invite a new supplier to collaborate on sourcing work.</CardDescription>
@@ -729,13 +445,14 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
                   />
                 </div>
                 <DialogFooter>
-                  <Button type="submit" disabled={createVendor.isLoading}>
-                    {createVendor.isLoading ? "Saving..." : "Create vendor"}
+                  <Button type="submit" disabled={createVendor.isPending}>
+                    {createVendor.isPending ? "Saving..." : "Create vendor"}
                   </Button>
                 </DialogFooter>
               </form>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -755,186 +472,246 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
           ))}
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[1.25fr,0.75fr]">
-          <div className="space-y-6">
-            <Card className="border border-slate-200 shadow-sm">
-              <CardHeader className="flex flex-row items-center justify-between gap-3">
-                <div>
-                  <CardTitle>Vendor roster</CardTitle>
-                  <CardDescription>Tap a vendor to view proposals, profiles, and chat threads.</CardDescription>
-                </div>
-                {vendors.length > 0 && (
-                  <Badge variant="outline" className="shrink-0">
-                    {vendors.length} active
-                  </Badge>
-                )}
-              </CardHeader>
-              <CardContent>
-                {isLoading ? (
-                  <VendorListSkeleton />
-                ) : vendors.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-slate-200 p-8 text-center">
-                    <p className="font-medium text-slate-900 mb-1">No vendors yet</p>
-                    <p className="text-sm text-muted-foreground">
-                      Add your first supplier to unlock sourcing workflows.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {vendors.map((vendor) => (
-                      <div
-                        key={vendor.id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => setSelectedVendorId(vendor.id)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            setSelectedVendorId(vendor.id);
-                          }
-                        }}
-                        className={`w-full rounded-xl border px-4 py-3 text-left transition cursor-pointer ${
-                          selectedVendorId === vendor.id
-                            ? "border-slate-900 shadow-md bg-slate-900/5"
-                            : "border-slate-200 hover:border-slate-300"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="font-semibold text-slate-900">{vendor.name}</p>
-                            <p className="text-xs text-muted-foreground flex items-center gap-2">
-                              {vendor.email || "No email"}
-                              {vendor.paymentTerms && (
-                                <>
-                                  <span>•</span>
-                                  <span>{vendor.paymentTerms.replace("_", " ").toUpperCase()}</span>
-                                </>
-                              )}
-                            </p>
-                          </div>
-                          <div className="flex flex-col items-end gap-1 text-right">
-                            <div className="flex items-center gap-2">
-                              {vendor.rating ? (
-                                <span className={`text-sm font-semibold ${ratingColor(vendor.rating)}`}>
-                                  <Star className="h-4 w-4 inline mr-1 fill-current" />
-                                  {vendor.rating.toFixed(1)}
-                                </span>
-                              ) : (
-                                <Badge variant="outline">Unrated</Badge>
-                              )}
-                              <MessageCircle className="h-4 w-4 text-slate-400" />
-                            </div>
-                          </div>
-                        </div>
-                        {vendor.notes && (
-                          <p className="mt-2 text-sm text-slate-600 line-clamp-2">{vendor.notes}</p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card className="border border-slate-200 shadow-sm">
-              <CardHeader>
-                <CardTitle>RFP pipeline</CardTitle>
-                <CardDescription>Active sourcing events with direct jumps into chat or long form views.</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {rfps.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-slate-200 p-8 text-center">
-                    <p className="font-medium text-slate-900 mb-1">No RFPs yet</p>
-                    <p className="text-sm text-muted-foreground">Publish an RFP to start collecting proposals.</p>
-                  </div>
-                ) : (
-                  rfps.slice(0, 4).map((rfp) => (
-                    <div
-                      key={rfp.id}
-                      className="rounded-xl border border-slate-200 bg-white/70 p-4 flex flex-col gap-2"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Badge variant="outline">{rfp.status}</Badge>
-                        {rfp.deadline && (
-                          <span className="text-xs text-muted-foreground">
-                            Due {formatDate(rfp.deadline?.toString())}
-                          </span>
-                        )}
-                      </div>
-                      <div>
-                        <p className="font-semibold text-slate-900">{rfp.title}</p>
-                        <p className="text-sm text-muted-foreground">{rfp.companyName}</p>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button variant="outline" size="sm" asChild>
-                          <Link href={`/rfp-view/${rfp.id}`}>
-                            <Building2 className="h-3.5 w-3.5 mr-1" />
-                            View RFP
-                          </Link>
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => openInternalChat(rfp.id)}
-                          disabled={!selectedVendor}
-                          title={!selectedVendor ? "Select a vendor to open internal chat" : undefined}
-                        >
-                          <MessageCircle className="h-3.5 w-3.5 mr-1" />
-                          Launch chat
-                        </Button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </CardContent>
-            </Card>
-
-            {proposalsWithoutVendors.length > 0 && (
-              <Card className="border border-amber-100 shadow-sm">
+        <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
+          <Tabs defaultValue="vendors" className="space-y-6">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="vendors">Vendors ({vendors.length})</TabsTrigger>
+              <TabsTrigger value="rfps">RFPs ({rfps.length})</TabsTrigger>
+            </TabsList>
+            
+            <TabsContent value="vendors" className="space-y-4">
+              <Card className="border border-slate-200 shadow-sm">
                 <CardHeader>
-                  <CardTitle>Proposals without vendors</CardTitle>
-                  <CardDescription>Spin up a vendor record directly from an inbound proposal.</CardDescription>
+                  <CardTitle>Vendor roster</CardTitle>
+                  <CardDescription>Manage your supplier network and track performance.</CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-3">
-                  {proposalsWithoutVendors.slice(0, 5).map((proposal) => (
-                    <div key={proposal.id} className="rounded-xl border border-amber-100 bg-amber-50/60 p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="font-semibold text-slate-900">{proposal.company}</p>
-                          <p className="text-xs text-muted-foreground">{proposal.email}</p>
-                        </div>
-                        <Badge variant="outline">{proposal.status}</Badge>
-                      </div>
-                      <p className="mt-2 text-sm text-slate-700 line-clamp-2">{proposal.coverLetter || "No summary provided."}</p>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Button variant="secondary" size="sm" asChild>
-                          <Link href={`/proposal-view/${proposal.id}`}>Review</Link>
-                        </Button>
-                        <Button
-                          size="sm"
-                          onClick={() => createVendorFromProposal.mutate(proposal)}
-                          disabled={createVendorFromProposal.isLoading}
-                          className="flex items-center gap-2"
-                        >
-                          {createVendorFromProposal.isLoading ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Plus className="h-4 w-4" />
-                          )}
-                          Create vendor
-                        </Button>
-                      </div>
+                <CardContent>
+                  {isLoading ? (
+                    <VendorListSkeleton />
+                  ) : vendors.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-slate-200 p-8 text-center">
+                      <p className="font-medium text-slate-900 mb-1">No vendors yet</p>
+                      <p className="text-sm text-muted-foreground">
+                        Add your first supplier to unlock sourcing workflows.
+                      </p>
                     </div>
-                  ))}
-                  {proposalsWithoutVendors.length > 5 && (
-                    <p className="text-xs text-muted-foreground">
-                      {proposalsWithoutVendors.length - 5} more proposals need vendor records.
-                    </p>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Vendor</TableHead>
+                          <TableHead>Contact</TableHead>
+                          <TableHead>Payment Terms</TableHead>
+                          <TableHead>Rating</TableHead>
+                          <TableHead>Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {vendors.map((vendor) => (
+                          <TableRow
+                            key={vendor.id}
+                            className={`cursor-pointer ${
+                              selectedVendorId === vendor.id ? "bg-slate-50" : ""
+                            }`}
+                            onClick={() => setSelectedVendorId(vendor.id)}
+                          >
+                            <TableCell>
+                              <div className="flex items-center gap-3">
+                                <CompanyLogo
+                                  domain={getVendorDomain(vendor)}
+                                  className="h-8 w-8"
+                                  alt={`${vendor.name} logo`}
+                                />
+                                <div>
+                                  <p className="font-medium text-slate-900">{vendor.name}</p>
+                                  {vendor.notes && (
+                                    <p className="text-xs text-muted-foreground line-clamp-1">
+                                      {vendor.notes}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="text-sm">
+                                <p className="text-slate-900">{vendor.email || "No email"}</p>
+                                {vendor.phone && (
+                                  <p className="text-muted-foreground">{vendor.phone}</p>
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              {vendor.paymentTerms ? (
+                                <Badge variant="outline" className="text-xs">
+                                  {vendor.paymentTerms.replace("_", " ").toUpperCase()}
+                                </Badge>
+                              ) : (
+                                <span className="text-sm text-muted-foreground">—</span>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              {vendor.rating ? (
+                                <div className={`flex items-center gap-1 ${ratingColor(vendor.rating)}`}>
+                                  <Star className="h-4 w-4 fill-current" />
+                                  <span className="text-sm font-medium">{vendor.rating.toFixed(1)}</span>
+                                </div>
+                              ) : (
+                                <Badge variant="outline" className="text-xs">Unrated</Badge>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <Button variant="outline" size="sm" asChild>
+                                <Link href={`/vendor-profile?vendorId=${encodeURIComponent(vendor.id)}`}>
+                                  Profile
+                                  <ArrowRight className="ml-1 h-3 w-3" />
+                                </Link>
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
                   )}
                 </CardContent>
               </Card>
-            )}
-          </div>
+            </TabsContent>
+
+            <TabsContent value="rfps" className="space-y-4">
+              <Card className="border border-slate-200 shadow-sm">
+                <CardHeader>
+                  <CardTitle>RFP pipeline</CardTitle>
+                  <CardDescription>Active sourcing events and proposal tracking.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {rfps.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-slate-200 p-8 text-center">
+                      <p className="font-medium text-slate-900 mb-1">No RFPs yet</p>
+                      <p className="text-sm text-muted-foreground">Publish an RFP to start collecting proposals.</p>
+                    </div>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>RFP</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Deadline</TableHead>
+                          <TableHead>Company</TableHead>
+                          <TableHead>Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {rfps.map((rfp) => (
+                          <TableRow key={rfp.id}>
+                            <TableCell>
+                              <div>
+                                <p className="font-medium text-slate-900">{rfp.title}</p>
+                                <p className="text-xs text-muted-foreground line-clamp-1">
+                                  {rfp.about || "No description"}
+                                </p>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant="outline" className="text-xs">
+                                {rfp.status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              {rfp.deadline ? (
+                                <span className="text-sm text-slate-700">
+                                  {formatDate(rfp.deadline?.toString())}
+                                </span>
+                              ) : (
+                                <span className="text-sm text-muted-foreground">No deadline</span>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <span className="text-sm text-slate-700">{rfp.companyName}</span>
+                            </TableCell>
+                            <TableCell>
+                              <Button variant="outline" size="sm" asChild>
+                                <Link href={`/rfp/${rfp.id}`}>
+                                  <Building2 className="h-3 w-3 mr-1" />
+                                  View RFP
+                                </Link>
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </CardContent>
+              </Card>
+
+              {proposalsWithoutVendors.length > 0 && (
+                <Card className="border border-amber-100 shadow-sm">
+                  <CardHeader>
+                    <CardTitle>Proposals without vendors</CardTitle>
+                    <CardDescription>Convert proposals into vendor records.</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Company</TableHead>
+                          <TableHead>Contact</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {proposalsWithoutVendors.slice(0, 5).map((proposal) => (
+                          <TableRow key={proposal.id}>
+                            <TableCell>
+                              <div>
+                                <p className="font-medium text-slate-900">{proposal.company}</p>
+                                <p className="text-xs text-muted-foreground line-clamp-1">
+                                  {proposal.coverLetter || "No summary provided."}
+                                </p>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <span className="text-sm text-slate-700">{proposal.email}</span>
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant="outline" className="text-xs">
+                                {proposal.status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex gap-2">
+                                <Button variant="secondary" size="sm" asChild>
+                                  <Link href={`/proposal/${proposal.id}`}>Review</Link>
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  onClick={() => createVendorFromProposal.mutate(proposal)}
+                                  disabled={createVendorFromProposal.isPending}
+                                  className="flex items-center gap-2"
+                                >
+                                  {createVendorFromProposal.isPending ? (
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                  ) : (
+                                    <Plus className="h-3 w-3" />
+                                  )}
+                                  Create vendor
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                    {proposalsWithoutVendors.length > 5 && (
+                      <p className="text-xs text-muted-foreground mt-4">
+                        {proposalsWithoutVendors.length - 5} more proposals need vendor records.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
+          </Tabs>
 
           <div className="space-y-6">
             <Card className="border border-slate-200 shadow-sm">
@@ -1063,17 +840,17 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
                         </p>
                         <div className="flex flex-wrap gap-2">
                           <Button variant="outline" size="sm" asChild>
-                            <Link href={`/proposal-view/${fallbackProposal.id}`}>Review proposal</Link>
+                            <Link href={`/proposal/${fallbackProposal.id}`}>Review proposal</Link>
                           </Button>
                           {!matchVendorForProposal(fallbackProposal) && (
                             <Button
                               variant="secondary"
                               size="sm"
                               onClick={() => createVendorFromProposal.mutate(fallbackProposal)}
-                              disabled={createVendorFromProposal.isLoading}
+                              disabled={createVendorFromProposal.isPending}
                               className="flex items-center gap-2"
                             >
-                              {createVendorFromProposal.isLoading ? (
+                              {createVendorFromProposal.isPending ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />
                               ) : (
                                 <Plus className="h-4 w-4" />
@@ -1081,14 +858,6 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
                               Create vendor
                             </Button>
                           )}
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => openInternalChat(fallbackProposal.rfpId)}
-                            disabled={!selectedVendor}
-                          >
-                            Open chat
-                          </Button>
                         </div>
                         <p className="text-xs text-muted-foreground">
                           We haven&apos;t officially linked this vendor yet—review the proposal to confirm.
@@ -1119,18 +888,10 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
                         </p>
                         <div className="flex flex-wrap gap-2">
                           <Button variant="outline" size="sm" asChild>
-                            <Link href={`/proposal-view/${proposal.id}`}>
+                            <Link href={`/proposal/${proposal.id}`}>
                               Proposal
                               <ArrowRight className="ml-1 h-4 w-4" />
                             </Link>
-                          </Button>
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => openInternalChat(proposal.rfpId)}
-                            disabled={!selectedVendor}
-                          >
-                            Vendor chat
                           </Button>
                         </div>
                       </div>
@@ -1142,199 +903,12 @@ export default function VendorsPage({ embedded = false }: VendorsPageProps = {})
               </CardContent>
             </Card>
 
-            <Card className="border border-slate-200 shadow-sm relative overflow-hidden">
-              <CardHeader className="flex flex-row items-center justify-between gap-3">
-                <div>
-                  <CardTitle>Quick chat</CardTitle>
-                  <CardDescription>Open the vendor channel without leaving sourcing.</CardDescription>
-                </div>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  aria-label="Open chat"
-                  onClick={() => openInternalChat(selectedRfpId || fallbackProposal?.rfpId)}
-                  disabled={!selectedVendor}
-                >
-                  <Menu className="h-4 w-4" />
-                </Button>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  We tuck the full chat UI behind a hamburger to keep the vendor board tidy. Pop it open to send quick
-                  nudges, answer scope questions, or drop files.
-                </p>
-              </CardContent>
-            </Card>
           </div>
         </div>
       </div>
 
-      <Sheet open={chatOpen} onOpenChange={setChatOpen}>
-        <SheetContent side="right" className="w-full sm:max-w-xl p-0 flex h-full flex-col overflow-hidden bg-white text-slate-900">
-          <div className="flex h-full flex-col overflow-hidden">
-          <SheetHeader className="p-5 border-b space-y-4">
-            <SheetTitle className="flex flex-col gap-1">
-              <span className="text-sm uppercase tracking-wide text-muted-foreground">Vendor Chat</span>
-              <span className="text-xl font-semibold">
-                {selectedVendor?.name || "Select a vendor"}
-              </span>
-            </SheetTitle>
-            <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-              {selectedVendor?.email && (
-                <span className="flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1 bg-white">
-                  <Mail className="h-4 w-4 text-slate-500" />
-                  {selectedVendor.email}
-                </span>
-              )}
-            </div>
-            {presenceMembers.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2">
-                {presenceMembers.slice(0, 4).map((participant) => (
-                  <div
-                    key={participant.id}
-                    className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700"
-                  >
-                    <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                    <span>{participant.name}</span>
-                  </div>
-                ))}
-                {presenceMembers.length > 4 && (
-                  <span className="text-xs text-muted-foreground">
-                    +{presenceMembers.length - 4} more
-                  </span>
-                )}
-              </div>
-            )}
-            {rfps.length > 0 && (
-              <div className="flex flex-col gap-2">
-                <Label className="text-xs text-muted-foreground">RFP context</Label>
-                <Select
-                  value={selectedRfpId || undefined}
-                  onValueChange={(value) => setSelectedRfpId(value)}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Choose RFP" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {rfps.map((rfp) => (
-                      <SelectItem key={rfp.id} value={rfp.id}>
-                        {rfp.title}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </SheetHeader>
-          <div className="flex-1 flex flex-col overflow-hidden bg-slate-50">
-            <ScrollArea className="flex-1">
-              <div className="px-5 py-5 space-y-4">
-                {chatQuery.isLoading ? (
-                  <div className="flex items-center gap-2 text-sm text-slate-600">
-                    <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                    Loading channel...
-                  </div>
-                ) : chatMessages.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-500">
-                    Start the conversation with this vendor.
-                  </div>
-                ) : (
-                  chatMessages.map((message) => {
-                    const isVendor = !!message.isVendorMessage;
-                    return (
-                      <div key={message.id} className="flex flex-col gap-1">
-                        <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
-                          <span className="font-semibold text-slate-700">{message.authorName || (isVendor ? "Vendor" : "Team")}</span>
-                          <span>•</span>
-                          <span>{formatDate(message.createdAt?.toString())}</span>
-                        </div>
-                        <div
-                          className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm shadow ${
-                            isVendor
-                              ? "bg-white border border-slate-200 text-slate-900"
-                              : "bg-emerald-500 text-white border border-emerald-400/40"
-                          }`}
-                        >
-                          <p className="whitespace-pre-wrap break-words">{message.content}</p>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-                <div ref={scrollAnchorRef} />
-              </div>
-            </ScrollArea>
-            <div className="border-t border-slate-200 bg-white p-4 space-y-3 sticky bottom-0 left-0">
-              <TypingPill names={typingNames} />
-              <div className="relative">
-                <Textarea
-                  placeholder="Send a note or answer a vendor question..."
-                  disabled={!selectedVendor || !selectedRfpId || sendMessage.isLoading}
-                  rows={3}
-                  value={messageDraft}
-                  onChange={(event) => setMessageDraft(event.target.value)}
-                  onInput={sendTypingSignal}
-                  className="pr-12"
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      submitComposerMessage();
-                    }
-                  }}
-                />
-                <Popover open={isEmojiPickerOpen} onOpenChange={setIsEmojiPickerOpen}>
-                  <PopoverTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="absolute bottom-3 right-3 h-8 w-8 text-slate-500"
-                      disabled={!selectedVendor || !selectedRfpId}
-                    >
-                      <Smile className="h-4 w-4" />
-                      <span className="sr-only">Add emoji</span>
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent align="end" className="w-48 p-2">
-                    <div className="grid grid-cols-6 gap-1">
-                      {QUICK_EMOJIS.map((emoji) => (
-                        <button
-                          key={emoji}
-                          type="button"
-                          className="rounded-md p-1 text-lg hover:bg-slate-100"
-                          onClick={() => {
-                            setMessageDraft((prev) => `${prev}${emoji}`);
-                            setIsEmojiPickerOpen(false);
-                          }}
-                        >
-                          {emoji}
-                        </button>
-                      ))}
-                    </div>
-                  </PopoverContent>
-                </Popover>
-              </div>
-              {typingNames.length > 0 && (
-                <p className="text-xs text-muted-foreground px-1">
-                  {typingNames.slice(0, 2).join(", ")}
-                  {typingNames.length > 2 ? " and others" : ""} typing...
-                </p>
-              )}
-              <div className="flex items-center justify-end">
-                <Button
-                  onClick={submitComposerMessage}
-                  disabled={
-                    !selectedVendor || !selectedRfpId || sendMessage.isLoading || !messageDraft.trim()
-                  }
-                >
-                  {sendMessage.isLoading ? "Sending..." : "Send"}
-                </Button>
-              </div>
-            </div>
-          </div>
-          </div>
-        </SheetContent>
-      </Sheet>
+      {/* RFP Publish Modal */}
+      <RfpPublishModal open={showRfpModal} onOpenChange={setShowRfpModal} />
     </div>
   );
 }

@@ -110,7 +110,7 @@ export default function AccountsReceivable() {
   // Invoice navigation function
   const viewInvoice = (invoiceId: string) => {
     // Navigate to the invoice view page
-    setLocation(`/recievables/invoices/${invoiceId}`);
+    setLocation(`/receivables/invoices/${invoiceId}`);
   };
 
   // Provide fallback values while loading
@@ -232,9 +232,9 @@ export default function AccountsReceivable() {
           <TabsList>
             <TabsTrigger value="customers">Customers</TabsTrigger>
             <TabsTrigger value="invoices">Sales Invoices</TabsTrigger>
-            <TabsTrigger value="recurring">Recurring Billing</TabsTrigger>
+            {/* <TabsTrigger value="recurring">Recurring Billing</TabsTrigger> */}
             <TabsTrigger value="payments">Payments</TabsTrigger>
-            <TabsTrigger value="reports">Reports</TabsTrigger>
+            {/* <TabsTrigger value="reports">Reports</TabsTrigger> */}
           </TabsList>
 
           <div className="flex items-center gap-2">
@@ -484,7 +484,7 @@ export default function AccountsReceivable() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="recurring" className="space-y-4">
+        {/* <TabsContent value="recurring" className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle>Recurring Billing</CardTitle>
@@ -504,7 +504,7 @@ export default function AccountsReceivable() {
               </div>
             </CardContent>
           </Card>
-        </TabsContent>
+        </TabsContent> */}
 
         <TabsContent value="payments" className="space-y-4">
           <Card>
@@ -561,7 +561,7 @@ export default function AccountsReceivable() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="reports" className="space-y-4">
+        {/* <TabsContent value="reports" className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle>Reports & Analytics</CardTitle>
@@ -583,7 +583,7 @@ export default function AccountsReceivable() {
               </div>
             </CardContent>
           </Card>
-        </TabsContent>
+        </TabsContent> */}
       </Tabs>
 
       {/* Create Customer Modal */}
@@ -1106,7 +1106,7 @@ export default function AccountsReceivable() {
                   const dueDate = (document.getElementById('editInvoiceDueDate') as HTMLInputElement)?.value;
                   const description = (document.getElementById('editInvoiceDescription') as HTMLTextAreaElement)?.value;
 
-                  const response = await fetch(`/api/recievables/invoices/${editingInvoice.id}`, {
+                  const response = await fetch(`/api/receivables/invoices/${editingInvoice.id}`, {
                     method: 'PATCH',
                     headers: {
                       'Content-Type': 'application/json',
@@ -1161,7 +1161,7 @@ export default function AccountsReceivable() {
             <AlertDialogAction 
               onClick={async () => {
                 try {
-                  const response = await fetch(`/api/recievables/invoices/${invoiceToDelete?.id}`, {
+                  const response = await fetch(`/api/receivables/invoices/${invoiceToDelete?.id}`, {
                     method: 'DELETE',
                   });
                   
@@ -1210,7 +1210,7 @@ export default function AccountsReceivable() {
             <AlertDialogAction 
               onClick={async () => {
                 try {
-                  const response = await fetch(`/api/recievables/customers/${customerToDelete?.id}`, {
+                  const response = await fetch(`/api/receivables/customers/${customerToDelete?.id}`, {
                     method: 'DELETE',
                   });
                   

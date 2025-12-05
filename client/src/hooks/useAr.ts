@@ -116,7 +116,7 @@ const apiCall = async (endpoint: string, options?: RequestInit) => {
 export const useArDashboardStats = () => {
   return useQuery({
     queryKey: ["ar", "dashboard", "stats"],
-    queryFn: () => apiCall("/recievables/dashboard/stats"),
+    queryFn: () => apiCall("/receivables/dashboard/stats"),
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 };
@@ -125,14 +125,14 @@ export const useArDashboardStats = () => {
 export const useCustomers = () => {
   return useQuery({
     queryKey: ["ar", "customers"],
-    queryFn: () => apiCall("/recievables/customers"),
+    queryFn: () => apiCall("/receivables/customers"),
   });
 };
 
 export const useCustomer = (id: string) => {
   return useQuery({
     queryKey: ["ar", "customers", id],
-    queryFn: () => apiCall(`/recievables/customers/${id}`),
+    queryFn: () => apiCall(`/receivables/customers/${id}`),
     enabled: !!id,
   });
 };
@@ -142,7 +142,7 @@ export const useCreateCustomer = () => {
   
   return useMutation({
     mutationFn: (customer: Partial<Customer>) =>
-      apiCall("/recievables/customers", {
+      apiCall("/receivables/customers", {
         method: "POST",
         body: JSON.stringify(customer),
       }),
@@ -166,7 +166,7 @@ export const useCreateCustomer = () => {
 export const useSalesInvoices = () => {
   return useQuery({
     queryKey: ["ar", "invoices"],
-    queryFn: () => apiCall("/recievables/invoices"),
+    queryFn: () => apiCall("/receivables/invoices"),
   });
 };
 
@@ -175,7 +175,7 @@ export const useCreateSalesInvoice = () => {
   
   return useMutation({
     mutationFn: (invoice: any) =>
-      apiCall("/recievables/invoices", {
+      apiCall("/receivables/invoices", {
         method: "POST",
         body: JSON.stringify(invoice),
       }),
@@ -196,8 +196,8 @@ export const useCreateSalesInvoice = () => {
 // Customer Payments Hooks
 export const useCustomerPayments = () => {
   return useQuery({
-    queryKey: ["recievables", "payments"],
-    queryFn: () => apiCall("/recievables/payments"),
+    queryKey: ["receivables", "payments"],
+    queryFn: () => apiCall("/receivables/payments"),
   });
 };
 
@@ -206,13 +206,13 @@ export const useCreateCustomerPayment = () => {
   
   return useMutation({
     mutationFn: (payment: Partial<CustomerPayment>) =>
-      apiCall("/recievables/payments", {
+      apiCall("/receivables/payments", {
         method: "POST",
         body: JSON.stringify(payment),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["recievables", "payments"] });
-      queryClient.invalidateQueries({ queryKey: ["recievables", "dashboard", "stats"] });
+      queryClient.invalidateQueries({ queryKey: ["receivables", "payments"] });
+      queryClient.invalidateQueries({ queryKey: ["receivables", "dashboard", "stats"] });
     },
   });
 };
@@ -349,7 +349,7 @@ export const useCreateAndSendStripeInvoice = () => {
 export const useStripeInvoice = (invoiceId: string) => {
   return useQuery({
     queryKey: ["ar", "stripe-invoice", invoiceId],
-    queryFn: () => apiCall(`/recievables/invoices/${invoiceId}`), // Reuse existing invoice endpoint which includes Stripe data
+    queryFn: () => apiCall(`/receivables/invoices/${invoiceId}`), // Reuse existing invoice endpoint which includes Stripe data
     enabled: !!invoiceId,
     staleTime: 30 * 1000, // 30 seconds - Stripe invoice data changes frequently
   });
